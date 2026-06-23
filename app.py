@@ -4,8 +4,8 @@ import re
 import json
 import time
 import requests
-from bs4 import BeautifulSoup
 import streamlit as st
+from bs4 import BeautifulSoup
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from dotenv import load_dotenv
@@ -18,6 +18,40 @@ except Exception:
     genai = None
 
 YELLOW = PatternFill(fill_type="solid", fgColor="FFFF00")
+
+BAD_DOMAINS = [
+    "avito", "ozon", "wildberries", "youtube", "vk.com", "dzen",
+    "instagram", "pinterest", "images", "cart", "login", "compare",
+    "forum", "drive2", "market.yandex", "maps.yandex", "translate.yandex",
+    "2gis", "wikipedia"
+]
+
+TRUSTED_DOMAINS = [
+    "globaldrive.ru", "more-motorov-spb.ru", "rollingmoto.ru",
+    "motomarine.ru", "vodnik", "honda", "tohatsu", "mercury", "suzuki",
+    "yamaha", "hidea", "parsun", "sea-pro", "linhai", "greencamel",
+    "brp", "can-am", "segway", "bajaj", "benda", "voge", "qjmotor",
+    "royalenfield", "ktm", "benelli", "stels", "mymotors", "hondaset",
+    "sprmotors", "motoland", "kayo", "regulmoto", "cfmoto", "sharmax",
+    "rus-lodki", "tulin-lodki", "lodki-piter", "favorit"
+]
+
+PRIORITY_SITES = [
+    "globaldrive.ru",
+    "rollingmoto.ru",
+    "more-motorov-spb.ru",
+    "motomarine.ru",
+    "vodnik.ru",
+    "mymotors.ru",
+    "hondaset.ru",
+    "rus-lodki.ru",
+    "tulin-lodki.ru",
+]
+
+HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 Chrome/124 Safari/537.36",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+}
 
 MOTO_ACCESSORIES = (
     "Шлем кроссовый Sharmax SH536 Red/Black;"
@@ -72,38 +106,9 @@ SERVICE_DEFAULTS = {
     },
 }
 
-MOTO_KNOWN = {
-    "voge ds800": ("VOGE", 798, "501 - 800", 94, "80 - 99", "Жидкостное", "4-тактный 2-цилиндровый", "Тур-эндуро", "Китай", "Китай", "Инжектор", 2),
-    "honda cb400": ("Honda", 399, "301 - 600", 46, "41 - 60", "Жидкостное", "4-тактный 4-цилиндровый", "Дорожный", "Япония", "Япония", "Карбюратор", 4),
-    "gold wing": ("Honda", 1833, "от 801", 126, "Более 100", "Жидкостное", "4-тактный 6-цилиндровый", "Туристический", "Япония", "Япония", "Инжектор", 6),
-    "srk 921": ("QJMotor", 921, "от 801", 129, "Более 100", "Жидкостное", "4-тактный 4-цилиндровый", "Нэйкед", "Китай", "Китай", "Инжектор", 4),
-    "srk 800": ("QJMotor", 799, "501 - 800", 95, "80 - 99", "Жидкостное", "4-тактный 4-цилиндровый", "Спортивный", "Китай", "Китай", "Инжектор", 4),
-    "srk 600": ("QJMotor", 554, "301 - 600", 61, "61 - 100", "Жидкостное", "4-тактный 4-цилиндровый", "Нэйкед", "Китай", "Китай", "Инжектор", 4),
-    "srk 550": ("QJMotor", 554, "301 - 600", 56, "41 - 60", "Жидкостное", "4-тактный 2-цилиндровый", "Нэйкед", "Китай", "Китай", "Инжектор", 2),
-    "srv 400": ("QJMotor", 385, "301 - 600", 41, "41 - 60", "Жидкостное", "4-тактный 2-цилиндровый", "Классический", "Китай", "Китай", "Инжектор", 2),
-    "srv 550": ("QJMotor", 554, "301 - 600", 61, "61 - 100", "Жидкостное", "4-тактный 2-цилиндровый", "Классический", "Китай", "Китай", "Инжектор", 2),
-    "pulsar ns400": ("Bajaj", 373, "301 - 600", 40, "26 - 40", "Жидкостное", "4-тактный 1-цилиндровый", "Нэйкед", "Индия", "Индия", "Инжектор", 1),
-    "ss400": ("Bajaj", 373, "301 - 600", 40, "26 - 40", "Жидкостное", "4-тактный 1-цилиндровый", "Спортивный", "Индия", "Индия", "Инжектор", 1),
-    "c4 300": ("M1NSK", 300, "200 - 300", 26, "26 - 40", "Воздушное", "4-тактный 1-цилиндровый", "Дорожный", "Беларусь", "Беларусь", "Карбюратор", 1),
-    "d4 125": ("M1NSK", 125, "до 199", 11, "9 - 15", "Воздушное", "4-тактный 1-цилиндровый", "Дорожный", "Беларусь", "Беларусь", "Карбюратор", 1),
-    "390 adventure": ("KTM", 373, "301 - 600", 43, "41 - 60", "Жидкостное", "4-тактный 1-цилиндровый", "Тур-эндуро", "Австрия", "Индия", "Инжектор", 1),
-    "390 duke": ("KTM", 373, "301 - 600", 43, "41 - 60", "Жидкостное", "4-тактный 1-цилиндровый", "Нэйкед", "Австрия", "Индия", "Инжектор", 1),
-    "himalayan 450": ("Royal Enfield", 452, "301 - 600", 40, "26 - 40", "Жидкостное", "4-тактный 1-цилиндровый", "Тур-эндуро", "Индия", "Индия", "Инжектор", 1),
-    "guerrilla 450": ("Royal Enfield", 452, "301 - 600", 40, "26 - 40", "Жидкостное", "4-тактный 1-цилиндровый", "Нэйкед", "Индия", "Индия", "Инжектор", 1),
-    "benelli 752": ("Benelli", 754, "501 - 800", 76, "61 - 100", "Жидкостное", "4-тактный 2-цилиндровый", "Нэйкед", "Италия", "Китай", "Инжектор", 2),
-    "hunter 350": ("Royal Enfield", 349, "301 - 600", 20, "16 - 25", "Воздушное", "4-тактный 1-цилиндровый", "Классический", "Индия", "Индия", "Инжектор", 1),
-    "interceptor": ("Royal Enfield", 648, "601 - 800", 47, "41 - 60", "Воздушно-масляное", "4-тактный 2-цилиндровый", "Классический", "Индия", "Индия", "Инжектор", 2),
-    "continental gt": ("Royal Enfield", 648, "601 - 800", 47, "41 - 60", "Воздушно-масляное", "4-тактный 2-цилиндровый", "Классический", "Индия", "Индия", "Инжектор", 2),
-    "rk125": ("Stels", 125, "до 199", 12, "9 - 15", "Воздушное", "4-тактный 1-цилиндровый", "Дорожный", "Россия", "Китай", "Карбюратор", 1),
-    "m502n": ("Stels", 500, "301 - 600", 47, "41 - 60", "Жидкостное", "4-тактный 2-цилиндровый", "Нэйкед", "Россия", "Китай", "Инжектор", 2),
-    "monster plus": ("Vento", 125, "до 199", 11, "9 - 15", "Воздушное", "4-тактный 1-цилиндровый", "Дорожный", "Китай", "Китай", "Карбюратор", 1),
-    "pulsar as 150": ("Bajaj", 150, "до 199", 17, "16 - 25", "Воздушное", "4-тактный 1-цилиндровый", "Дорожный", "Индия", "Индия", "Карбюратор", 1),
-    "pulsar as 200": ("Bajaj", 199, "до 199", 24, "16 - 25", "Жидкостное", "4-тактный 1-цилиндровый", "Дорожный", "Индия", "Индия", "Карбюратор", 1),
-    "boxer bm125": ("Bajaj", 125, "до 199", 10, "9 - 15", "Воздушное", "4-тактный 1-цилиндровый", "Дорожный", "Индия", "Индия", "Карбюратор", 1),
-    "bajaj v 150": ("Bajaj", 150, "до 199", 12, "9 - 15", "Воздушное", "4-тактный 1-цилиндровый", "Классический", "Индия", "Индия", "Карбюратор", 1),
-}
-
 BRAND_DEFAULTS = {
+    "союз": ("СОЮЗ", "Россия", "Россия"),
+    "favorit": ("Favorit", "Россия", "Россия"),
     "honda": ("Honda", "Япония", "Япония"),
     "tohatsu": ("Tohatsu", "Япония", "Япония"),
     "suzuki": ("Suzuki", "Япония", "Япония"),
@@ -125,6 +130,11 @@ BRAND_DEFAULTS = {
     "benda": ("Benda", "Китай", "Китай"),
     "linhai": ("Linhai Yamaha", "Китай", "Китай"),
     "greencamel": ("GreenCamel", "Россия", "Китай"),
+    "sprmotors": ("SPRMOTORS", "Китай", "Китай"),
+    "motoland": ("Motoland", "Россия", "Китай"),
+    "kayo": ("Kayo", "Китай", "Китай"),
+    "regulmoto": ("Regulmoto", "Россия", "Китай"),
+    "cfmoto": ("CFMOTO", "Китай", "Китай"),
 }
 
 CATEGORY_KEYS = {
@@ -156,9 +166,9 @@ def detect_category(headers, first_names):
     names = " ".join(first_names).lower()
     if any(x in names for x in ["bf", "mfs", "mercury", "tohatsu", "hidea", "parsun", "sea-pro", "suzuki df"]):
         return "лодочный мотор"
-    if any(x in names for x in ["пвх", "лодка", "нднд", "hunter", "байкал", "сапфир"]):
+    if any(x in names for x in ["пвх", "лодка", "нднд", "airdeck", "союз", "байкал", "сапфир"]):
         return "лодка пвх"
-    if any(x in names for x in ["atv", "outlander", "segway", "linhai", "квадроцикл"]):
+    if any(x in names for x in ["atv", "outlander", "segway", "linhai", "квадроцикл", "sprmotors", "blade"]):
         return "квадроцикл"
     if any(x in names for x in ["greencamel", "гольфкар", "сонора"]):
         return "гольфкар"
@@ -182,61 +192,7 @@ def set_if_col(ws, hmap, row, header, value):
     return 1
 
 
-def extract_json(text):
-    if not text:
-        return {}
-    text = text.strip().replace("```json", "").replace("```", "").strip()
-    try:
-        data = json.loads(text)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        pass
-    m = re.search(r"\{.*\}", text, re.S)
-    if m:
-        try:
-            data = json.loads(m.group(0))
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
-    return {}
-
-
-
-BAD_DOMAINS = [
-    "avito", "ozon", "wildberries", "youtube", "vk.com", "dzen",
-    "instagram", "pinterest", "images", "cart", "login", "compare",
-    "forum", "drive2", "market.yandex", "maps.yandex", "translate.yandex",
-    "2gis", "wikipedia"
-]
-
-TRUSTED_DOMAINS = [
-    "globaldrive.ru", "more-motorov-spb.ru", "rollingmoto.ru",
-    "motomarine.ru", "vodnik", "honda", "tohatsu", "mercury", "suzuki",
-    "yamaha", "hidea", "parsun", "sea-pro", "linhai", "greencamel",
-    "brp", "can-am", "segway", "bajaj", "benda", "voge", "qjmotor",
-    "royalenfield", "ktm", "benelli", "stels", "mymotors", "hondaset",
-    "sprmotors", "motoland", "kayo", "regulmoto", "cfmoto", "sharmax",
-    "snowmax", "atv", "quad", "pitbike", "pit-bike"
-]
-
-PRIORITY_SITES = [
-    "globaldrive.ru",
-    "rollingmoto.ru",
-    "more-motorov-spb.ru",
-    "motomarine.ru",
-    "vodnik.ru",
-    "mymotors.ru",
-    "hondaset.ru",
-]
-
-HTTP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 Chrome/124 Safari/537.36",
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-}
-
-
 def clean_product_name(name):
-    """Очищает название для поиска, но не теряет модель."""
     s = str(name or "").strip()
     s = re.sub(r"\([^)]*(цвет|red|black|blue|green|white|желт|красн|черн|син|бел|202[0-9])[^)]*\)", " ", s, flags=re.I)
     s = re.sub(r"\b(новый|new|202[0-9]|год|цвет|красный|черный|чёрный|синий|белый|желтый|зелёный|зеленый)\b", " ", s, flags=re.I)
@@ -254,21 +210,16 @@ def score_url(url, product_name):
     p = clean_product_name(product_name).lower()
     if is_bad_url(u):
         return -1000
-
     score = 0
     if any(d in u for d in TRUSTED_DOMAINS):
         score += 100
     if any(d in u for d in PRIORITY_SITES):
         score += 80
-
-    tokens = [t.lower() for t in re.findall(r"[a-zA-Zа-яА-Я0-9]+", p) if len(t) > 1]
-    for t in tokens:
-        if t in u:
+    for token in re.findall(r"[a-zA-Zа-яА-Я0-9]+", p):
+        if len(token) > 1 and token.lower() in u:
             score += 8
-
     if any(x in u for x in ["product", "catalog", "character", "spec", "harakter", "kharakteristiki", "products"]):
         score += 20
-
     return score
 
 
@@ -276,7 +227,6 @@ def search_serper(query, max_results=10):
     api_key = get_secret("SERPER_API_KEY")
     if not api_key:
         return [], [], "SERPER_API_KEY не найден"
-
     try:
         r = requests.post(
             "https://google.serper.dev/search",
@@ -288,7 +238,6 @@ def search_serper(query, max_results=10):
         data = r.json()
     except Exception as e:
         return [], [], f"Ошибка Serper: {e}"
-
     links = []
     snippets = []
     for item in data.get("organic", []):
@@ -309,39 +258,31 @@ def build_search_queries(product_name, category):
         f'{clean} {category} характеристики',
         f'{clean} купить характеристики',
     ]
-
     for site in PRIORITY_SITES:
         queries.append(f'"{clean}" site:{site}')
-
-    # Поиск без кавычек иногда находит карточки лучше
     queries += [
         f'{clean} характеристики',
         f'{clean} технические характеристики',
         f'{clean} отзывы характеристики',
     ]
-
     return list(dict.fromkeys(queries))
 
 
 def find_pages(product_name, category, max_pages=10):
-    queries = build_search_queries(product_name, category)
     all_links = []
     all_snippets = []
     logs = []
-
-    for q in queries:
+    for q in build_search_queries(product_name, category):
         links, snippets, status = search_serper(q, 10)
         all_links.extend(links)
         all_snippets.extend(snippets)
         logs.append(f"Запрос: {q} | найдено: {len(links)} | {status}")
-
     unique = []
     seen = set()
     for url in all_links:
         if url not in seen:
             seen.add(url)
             unique.append(url)
-
     ranked = sorted(unique, key=lambda u: score_url(u, product_name), reverse=True)
     return ranked[:max_pages], all_snippets[:40], logs
 
@@ -352,12 +293,10 @@ def fetch_text(url):
         r.raise_for_status()
     except Exception as e:
         return "", f"не открылось: {e}"
-
     html = r.text or ""
     low = html.lower()
     if any(x in low for x in ["captcha", "recaptcha", "cloudflare", "access denied", "докажите", "робот", "checking your browser"]):
         return "", "сайт просит капчу/антибот, пропущено"
-
     try:
         soup = BeautifulSoup(html, "lxml")
         for tag in soup(["script", "style", "noscript", "svg", "footer", "nav"]):
@@ -368,32 +307,38 @@ def fetch_text(url):
         return "", f"ошибка чтения страницы: {e}"
 
 
+def extract_json(text):
+    if not text:
+        return {}
+    text = text.strip().replace("```json", "").replace("```", "").strip()
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    m = re.search(r"\{.*\}", text, re.S)
+    if m:
+        try:
+            data = json.loads(m.group(0))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
 
 def gemini_by_name(product_name, headers, category, source_text=""):
     api_key = get_secret("GEMINI_API_KEY")
     if not api_key or genai is None:
         return {}, "Gemini недоступен"
-
     genai.configure(api_key=api_key)
     safe_headers = [
         h for h in headers
         if h and not any(x in h.lower() for x in ["uid", "уид", "активность", "розничная цена"])
     ]
-
     if source_text and source_text.strip():
-        source_part = f"""
-НАЙДЕННЫЕ ИСТОЧНИКИ ИЗ ИНТЕРНЕТА:
-{source_text[:22000]}
-
-Используй источники как главный источник данных.
-"""
+        source_part = f"НАЙДЕННЫЕ ИСТОЧНИКИ:\n{source_text[:22000]}\nИспользуй источники как главный источник."
     else:
-        source_part = """
-Источники не открылись или были закрыты капчей.
-Заполни по названию товара, категории, маркировке модели и технической логике.
-Если точную цифру не знаешь — пропусти поле.
-"""
-
+        source_part = "Источники не открылись. Заполни по названию товара, категории и технической логике. Если точную цифру не знаешь — пропусти."
     prompt = f"""
 Ты профессиональный контент-менеджер интернет-магазина техники.
 Верни только JSON для заполнения Excel.
@@ -413,11 +358,9 @@ def gemini_by_name(product_name, headers, category, source_text=""):
 - ключи JSON должны точно совпадать с колонками;
 - не заполняй УИД, UID, Активность, Розничная цена;
 - если точную цифру не знаешь — пропусти;
-- если колонка имеет понятный справочный формат — пиши коротко: Инжектор, Карбюратор, Жидкостное, Электростартер, Бензиновый;
-- заполни максимум характеристик;
-- если источников мало, используй техническую логику, но не выдумывай точные цифры.
+- пиши короткие справочные значения: Инжектор, Карбюратор, Жидкостное, Электростартер, Бензиновый;
+- заполни максимум характеристик.
 """
-
     for model_name in ["gemini-2.0-flash", "gemini-flash-latest", "gemini-2.5-flash"]:
         try:
             model = genai.GenerativeModel(model_name)
@@ -432,6 +375,41 @@ def gemini_by_name(product_name, headers, category, source_text=""):
             last = str(e)
             continue
     return {}, f"Gemini не сработал, файл всё равно будет создан. Ошибка: {last if 'last' in locals() else ''}"
+
+
+def num_after(text, labels, min_val=None, max_val=None):
+    t = text.lower()
+    results = []
+    for label in labels:
+        lab = label.lower()
+        start = 0
+        while True:
+            pos = t.find(lab, start)
+            if pos == -1:
+                break
+            frag = text[pos:pos+260]
+            m = re.search(r"(\d+[,.]?\d*)", frag)
+            if m:
+                val = m.group(1).replace(",", ".")
+                try:
+                    f = float(val)
+                    if (min_val is None or f >= min_val) and (max_val is None or f <= max_val):
+                        results.append(val)
+                except Exception:
+                    pass
+            start = pos + len(lab)
+    return results[0] if results else ""
+
+
+def apply_brand(spec, name):
+    p = name.lower()
+    for key, (brand, country, made) in BRAND_DEFAULTS.items():
+        if key in p:
+            spec.setdefault("Бренд [BRAND]", brand)
+            spec.setdefault("Страна бренда [BRAND_COUNTRY]", country)
+            spec.setdefault("Страна производства [MANUFACTURER]", made)
+            return spec
+    return spec
 
 
 def range_hp_motor(hp):
@@ -458,51 +436,6 @@ def hp_from_name(name):
             if 2 <= v <= 350:
                 return v
     return None
-
-
-def apply_brand(spec, name):
-    p = name.lower()
-    for key, (brand, country, made) in BRAND_DEFAULTS.items():
-        if key in p:
-            spec.setdefault("Бренд [BRAND]", brand)
-            spec.setdefault("Страна бренда [BRAND_COUNTRY]", country)
-            spec.setdefault("Страна производства [MANUFACTURER]", made)
-            return spec
-    return spec
-
-
-def rules_motorcycle(name):
-    p = name.lower()
-    spec = {}
-    for key, row in MOTO_KNOWN.items():
-        if key in p:
-            brand, cc, cc_range, hp, hp_range, cooling, engine, mtype, bc, made, fuel, cyl = row
-            spec.update({
-                "Бренд [BRAND]": brand,
-                "Объём двигателя, куб [ENGINE_CAPACITY]": cc,
-                "Объём двигателя (по диапазонам) [ENGINE_CAPACITY1]": cc_range,
-                "Мощность, л.с. [POWER_HP]": hp,
-                "Мощность (по диапазонам) [POWER_HP1]": hp_range,
-                "Охлаждение [COOLING]": cooling,
-                "Двигатель [ENGINE]": engine,
-                "Тип мотоцикла [Motorcycle_Type]": mtype,
-                "Страна бренда [BRAND_COUNTRY]": bc,
-                "Страна производства [MANUFACTURER]": made,
-                "Система подачи топлива [Fuel_supply_system]": fuel,
-                "Количество цилиндров [CYLINDERS]": cyl,
-            })
-            break
-    apply_brand(spec, name)
-    spec.setdefault("Гарантия [WARRANTY]", "1 год")
-    spec.setdefault("Наличие ПТС [NALICHIE_PTS]", "Да")
-    spec.setdefault("Система запуска [STARTING_SYSTEM]", "Электростартер")
-    spec.setdefault("Материал рамы [FRAME_MATERIAL]", "Сталь")
-    spec.setdefault("Тип топлива [TYPE_FUEL]", "АИ92-95")
-    spec.setdefault("Количество тактов [STROKE]", 4)
-    spec.setdefault("Тип двигателя [TYPE_ENGINE]", "Бензиновый")
-    spec.setdefault("Трансмиссия [TRANSMISSION]", "Механическая")
-    spec.setdefault("Карбюратор [Carburetor]", "Нет")
-    return spec
 
 
 def rules_boat_motor(name):
@@ -535,16 +468,50 @@ def rules_pvc_boat(name):
     p = name.lower()
     spec = {}
     apply_brand(spec, name)
+    length = re.search(r"(\d{3})", p)
+    if length:
+        spec["Длина, см [LENGTH_CM]"] = int(length.group(1))
     spec.setdefault("Тип лодки [TYPE_BOAT]", "Под мотор")
     spec.setdefault("Гарантия [WARRANTY]", "1 год")
-    if "нднд" in p or "air" in p or "aero" in p:
+    if "airdeck" in p or "нднд" in p or "air" in p or "aero" in p:
         spec["Тип днища [TYPE_BOTTOM]"] = "Надувное, низкого давления"
-    elif any(x in p for x in ["ал", "al"]):
-        spec["Тип днища [TYPE_BOTTOM]"] = "Алюминиевые пайолы"
+    elif any(x in p for x in ["фб", "фанер", "пайол"]):
+        spec["Тип днища [TYPE_BOTTOM]"] = "Фанерные пайолы"
     else:
         spec["Тип днища [TYPE_BOTTOM]"] = "Надувное, низкого давления"
     spec.setdefault("Сливной клапан [DRAIN_VALVE]", "Есть")
     spec.setdefault("Надувной киль [INFLATABLE_KEEL]", "Есть")
+    return spec
+
+
+def parse_pvc_from_sources(source_text):
+    spec = {}
+    text = source_text or ""
+    if not text.strip():
+        return spec
+    fields = {
+        "Длина, см [LENGTH_CM]": (["длина лодки", "длина", "габаритная длина"], 100, 600),
+        "Ширина, см [WIDTH]": (["ширина лодки", "ширина", "габаритная ширина"], 50, 300),
+        "Диаметр борта, см [BOAT_SIDE_DIAMETER]": (["диаметр баллона", "диаметр борта", "баллон"], 20, 80),
+        "Плотность материала - баллон [DENSITY_PVC_SIDE]": (["плотность пвх", "плотность материала", "плотность баллона"], 500, 2000),
+        "Плотность материала - дно [DENSITY_PVC_BOTTOM]": (["плотность дна", "плотность днища"], 500, 2000),
+        "Макс. мощность мотора, л.с. [MAX_POWER]": (["максимальная мощность мотора", "мощность мотора", "макс. мощность"], 1, 100),
+        "Сухой вес, кг [DRY_WEIGHT]": (["вес комплекта", "вес лодки", "сухой вес", "масса"], 5, 200),
+        "Вес, кг [WEIGHT]": (["вес комплекта", "вес лодки", "масса"], 5, 200),
+        "Грузоподъемность, кг [LOAD_CAPACITY]": (["грузоподъемность", "грузоподъёмность"], 50, 2000),
+        "Пассажировместимость, чел [PASSENGER]": (["пассажировместимость", "количество пассажиров", "вместимость"], 1, 20),
+        "Внутренняя длина, см [INNER_LENGTH]": (["внутренняя длина", "длина кокпита"], 50, 500),
+        "Внутренняя ширина, см [INNER_WIDTH]": (["внутренняя ширина", "ширина кокпита"], 20, 200),
+        "Высота транцевой доски [TRANSOM_HEIGHT]": (["высота транца", "транцевая доска", "транец"], 20, 80),
+        "Количество сидений [SEATS]": (["количество сидений", "сидений"], 1, 6),
+        "Количество надуваемых отсеков [INFLATABLE_COMPARTMENTS]": (["количество отсеков", "надувных отсеков", "отсеков"], 1, 8),
+    }
+    for header, (labels, mn, mx) in fields.items():
+        val = num_after(text, labels, mn, mx)
+        if val:
+            spec[header] = val
+    if "Плотность материала - баллон [DENSITY_PVC_SIDE]" in spec and "Плотность материала - дно [DENSITY_PVC_BOTTOM]" in spec:
+        spec["Плотность материала (баллон/дно) [DENSITY]"] = f'{spec["Плотность материала - баллон [DENSITY_PVC_SIDE]"]}/{spec["Плотность материала - дно [DENSITY_PVC_BOTTOM]"]}'
     return spec
 
 
@@ -581,8 +548,24 @@ def rules_golfcar(name):
     return spec
 
 
+def rules_motorcycle(name):
+    spec = {}
+    p = name.lower()
+    apply_brand(spec, name)
+    spec.setdefault("Гарантия [WARRANTY]", "1 год")
+    spec.setdefault("Наличие ПТС [NALICHIE_PTS]", "Да")
+    spec.setdefault("Система запуска [STARTING_SYSTEM]", "Электростартер")
+    spec.setdefault("Материал рамы [FRAME_MATERIAL]", "Сталь")
+    spec.setdefault("Тип топлива [TYPE_FUEL]", "АИ92-95")
+    spec.setdefault("Количество тактов [STROKE]", 4)
+    spec.setdefault("Тип двигателя [TYPE_ENGINE]", "Бензиновый")
+    spec.setdefault("Трансмиссия [TRANSMISSION]", "Механическая")
+    spec.setdefault("Карбюратор [Carburetor]", "Нет")
+    return spec
+
+
 def make_rules(name, category):
-    if category == "мотоцикл" or category in ["дорожный мотоцикл", "внедорожный мотоцикл"]:
+    if category in ["мотоцикл", "дорожный мотоцикл", "внедорожный мотоцикл"]:
         spec = rules_motorcycle(name)
         spec.update(SERVICE_DEFAULTS.get("мотоцикл", {}))
         return spec
@@ -605,57 +588,64 @@ def make_rules(name, category):
     return {}
 
 
-def process_excel(uploaded_file, category_mode, max_products, use_ai, use_search):
+def parse_sources(source_text, category):
+    if category == "лодка пвх":
+        return parse_pvc_from_sources(source_text)
+    return {}
+
+
+def process_excel(uploaded_file, category_mode, max_products, use_search, use_ai):
     wb = load_workbook(uploaded_file)
     ws = wb.active
     hmap = header_map(ws)
     headers = list(hmap.keys())
-
     for s in ["Отчет", "Проверить", "Лог поиска"]:
         if s in wb.sheetnames:
             del wb[s]
-
     report = wb.create_sheet("Отчет")
     report.append(["Показатель", "Значение"])
     check = wb.create_sheet("Проверить")
     check.append(["Строка", "Товар", "Поле", "Значение", "Комментарий"])
-
     rows = []
     for r in range(2, ws.max_row + 1):
         name = str(ws.cell(r, 1).value or "").strip()
         if name:
             rows.append((r, name))
     rows = rows[:max_products]
-
     if category_mode == "Авто по шаблону":
         category = detect_category(headers, [n for _, n in rows[:5]])
     else:
         category = category_mode
-
     changed = 0
     ai_ok = 0
     ai_fail = 0
     rules_ok = 0
+    parsed_ok = 0
+    source_ok = 0
     progress = st.progress(0)
-
     for idx, (r, name) in enumerate(rows, start=1):
         row_category = detect_category(headers, [name]) if category_mode == "Авто по строкам" else category
         spec = make_rules(name, row_category)
         if spec:
             rules_ok += 1
-
         source_text = ""
         if use_search:
             urls, snippets, search_logs = find_pages(name, row_category)
             source_text = "\n".join(snippets)
+            for log in search_logs[:8]:
+                check.append([r, name, "Поиск", "", log])
             for url in urls:
                 txt, fetch_status = fetch_text(url)
                 check.append([r, name, "Источник", url, fetch_status])
                 if txt:
+                    source_ok += 1
                     source_text += "\n\n" + txt
+            parsed = parse_sources(source_text, row_category)
+            if parsed:
+                parsed_ok += 1
+                spec.update(parsed)
             if not urls:
-                check.append([r, name, "Поиск", "", "Ссылки не найдены, будет fallback через AI по названию"])
-
+                check.append([r, name, "Поиск", "", "Ссылки не найдены"])
         if use_ai:
             ai_spec, status = gemini_by_name(name, headers, row_category, source_text)
             if ai_spec:
@@ -665,45 +655,43 @@ def process_excel(uploaded_file, category_mode, max_products, use_ai, use_search
                 ai_fail += 1
                 check.append([r, name, "Gemini", "", status])
             time.sleep(2)
-
         if not spec:
-            check.append([r, name, "Товар", "", "Нет правил и AI не вернул данные"])
+            check.append([r, name, "Товар", "", "Нет правил, парсинга и AI"])
             progress.progress(idx / len(rows))
             continue
-
         row_changed = 0
         for h, v in spec.items():
             row_changed += set_if_col(ws, hmap, r, h, v)
-
         changed += row_changed
         if row_changed == 0:
             check.append([r, name, "Заполнение", "", "Нечего изменить или нет колонок"])
-
         progress.progress(idx / len(rows))
-
     for row in [
         ["Категория", category],
         ["Режим", category_mode],
         ["Обработано товаров", len(rows)],
         ["Правила сработали", rules_ok],
+        ["Источники открылись", source_ok],
+        ["Парсинг источников сработал", parsed_ok],
         ["Gemini успешно", ai_ok],
         ["Gemini ошибки", ai_fail],
         ["Изменено ячеек", changed],
-        ["Режим стабильности", "файл возвращается всегда"],
+        ["Важно", "Gemini можно выключить: программа парсит найденные страницы сама"],
     ]:
         report.append(row)
-
     out = io.BytesIO()
     wb.save(out)
     out.seek(0)
     return out
 
 
-st.set_page_config(page_title="GD AutoFill Universal v18", layout="centered")
-st.title("GD AutoFill Universal v18")
-st.write("Стабильная версия со всеми основными категориями. Универсальный поиск: Serper/Google → источники → Gemini → Excel. Капчу пропускает и берёт другой источник.")
+st.set_page_config(page_title="GD AutoFill FINAL v19", layout="centered")
+st.title("GD AutoFill FINAL v19")
+st.write("Финальная стабильная версия: поиск → парсинг источников → Excel. Gemini только как дополнительный режим.")
 
 gemini_ok = bool(get_secret("GEMINI_API_KEY"))
+serper_ok = bool(get_secret("SERPER_API_KEY"))
+st.info(f"Serper API: {'✅ найден' if serper_ok else '❌ не найден'}")
 st.info(f"Gemini API: {'✅ найден' if gemini_ok else '❌ не найден'}")
 
 category_mode = st.selectbox(
@@ -721,40 +709,36 @@ category_mode = st.selectbox(
     ],
 )
 
-max_products = st.number_input("Сколько товаров обработать за раз", min_value=1, max_value=500, value=500, help="500 означает: обработать все строки, которые есть в файле.")
-use_search = st.checkbox("Искать характеристики в интернете через Serper/Google", value=True)
-use_ai = st.checkbox("Дозаполнять новые товары через Gemini AI", value=False)
+max_products = st.number_input("Сколько товаров обработать за раз", min_value=1, max_value=500, value=500)
+use_search = st.checkbox("Искать характеристики в интернете", value=True)
+use_ai = st.checkbox("Дозаполнять через Gemini AI", value=False)
 
 if use_ai:
-    st.warning("ИИ может работать медленно на бесплатном тарифе. Для теста лучше 1–3 товара.")
+    st.warning("Gemini на бесплатном тарифе может дать 429. Для стабильности сначала пробуй без Gemini.")
 
 uploaded = st.file_uploader("Загрузите Excel", type=["xlsx"])
-
 if uploaded:
     st.success(f"Файл загружен: {uploaded.name}")
     try:
-        _wb_preview = load_workbook(uploaded, read_only=True)
-        _ws_preview = _wb_preview.active
-        _names_preview = []
-        for _r in range(2, _ws_preview.max_row + 1):
-            _name = str(_ws_preview.cell(_r, 1).value or "").strip()
-            if _name:
-                _names_preview.append(_name)
-        st.info(f"В файле найдено товаров: {len(_names_preview)}")
+        _wb = load_workbook(uploaded, read_only=True)
+        _ws = _wb.active
+        cnt = 0
+        for _r in range(2, _ws.max_row + 1):
+            if str(_ws.cell(_r, 1).value or "").strip():
+                cnt += 1
+        st.info(f"В файле найдено товаров: {cnt}")
         uploaded.seek(0)
-    except Exception as _e:
-        st.warning(f"Не смогла посчитать строки файла: {_e}")
+    except Exception:
         uploaded.seek(0)
-
     if st.button("Заполнить и скачать"):
         with st.spinner("Заполняю файл..."):
             try:
-                result = process_excel(uploaded, category_mode, int(max_products), use_ai, use_search)
+                result = process_excel(uploaded, category_mode, int(max_products), use_search, use_ai)
                 st.success("Готово")
                 st.download_button(
                     "Скачать заполненный Excel",
                     data=result,
-                    file_name=uploaded.name.replace(".xlsx", "_UNIVERSAL_v18.xlsx"),
+                    file_name=uploaded.name.replace(".xlsx", "_FINAL_v19.xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             except Exception as e:
