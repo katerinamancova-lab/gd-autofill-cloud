@@ -277,53 +277,107 @@ def call_gemini(product_name: str, category: str, headers: list[str], source_tex
 
     safe_headers = [
         h for h in headers
-        if h and not any(x in str(h).lower() for x in ["uid", "уид", "активность", "цена"])
+        if h and not any(x in str(h).lower() for x in ["uid", "уид", "активность", "розничная цена"])
     ]
+
+    has_sources = bool(str(source_text or "").strip())
+
+    if has_sources:
+        source_block = f"""
+Ниже есть текст найденных интернет-источников. Используй его как основной источник.
+Если в источниках есть точные цифры — бери их.
+Текст источников:
+{source_text[:18000]}
+"""
+    else:
+        source_block = """
+Интернет-источники не открылись или текст пустой.
+В этом случае используй знания по модели товара, маркировке и техническую логику.
+Если точную характеристику невозможно определить — пропусти поле.
+"""
 
     prompt = f"""
 Ты профессиональный контент-менеджер интернет-магазина техники.
-Нужно заполнить Excel-карточку товара.
+Твоя задача — заполнить Excel-карточку товара.
 
-Товар: {product_name}
-Категория: {category}
+ТОВАР:
+{product_name}
 
-Колонки Excel, которые можно заполнять:
+КАТЕГОРИЯ:
+{category}
+
+КОЛОНКИ EXCEL, которые можно заполнять:
 {json.dumps(safe_headers, ensure_ascii=False)}
 
-Текст источников из интернета:
-{source_text[:18000]}
+{source_block}
 
-Верни только JSON. Без markdown и без пояснений.
+ОЧЕНЬ ВАЖНО:
+Верни только JSON-объект. Без markdown. Без комментариев.
 
-Правила:
-1. Ключи JSON должны точно совпадать с колонками Excel.
+ПРАВИЛА ЗАПОЛНЕНИЯ:
+1. Ключи JSON должны ТОЧНО совпадать с колонками Excel.
 2. Не заполняй УИД, UID, Активность, Розничная цена.
 3. Числа пиши с точкой, не с запятой.
-4. Если есть точное значение в источнике — заполни.
-5. Если не уверен в точной цифре — лучше пропусти.
-6. Для служебных полей можно использовать:
-   - Комплектация: Мотоцикл + Сервисная книжка
-   - Гарантия на товар: Гарантия на товар составляет 1 год
-   - Скидка: 11
-   - Доступное количество: 1000
-   - Сортировка: 500
+4. Если можешь определить характеристику по модели — заполни.
+5. Если есть сомнение в точной цифре — лучше пропусти.
+6. Служебные поля можно заполнять:
+   - Комплектация
+   - Гарантия на товар
+   - Скидка
+   - Доступное количество
+   - Нет в продаже
+   - Сортировка
+   - Привязка к аксессуарам (новая)
+
+ЛОГИКА ДЛЯ МОТОЦИКЛОВ:
+- Honda = Япония.
+- Bajaj = Индия.
+- VOGE, QJMotor, Benda = Китай.
+- KTM = Австрия, часто производство Индия.
+- Royal Enfield = Индия.
+- Benelli = Италия / производство Китай.
+- Stels = Россия / производство Китай.
+- EFI / FI / Injection = Инжектор.
+- 4-stroke / 4 такта = 4.
+- Бензиновый мотоцикл = Бензиновый.
+- Если это дорожный/нейкед/туристический/классический мотоцикл — выбери подходящий тип.
+
+ЛОГИКА ДЛЯ ЛОДОЧНЫХ МОТОРОВ:
+- Honda, Tohatsu, Suzuki, Yamaha = Япония.
+- Mercury = США.
+- Hidea, HDX, Parsun, Sea-Pro, Seanovo = Китай.
+- EFI = Инжектор.
+- Jet / водомёт = Водомёт.
+- 4-тактный мотор = 4.
+- Бензиновый ПЛМ = Бензиновый.
+- BF100 / F60 / MFS50 / DF115 обычно указывает мощность в л.с.
+
+ЗАПОЛНИ МАКСИМУМ ВОЗМОЖНЫХ КОЛОНОК.
 """
 
-    try:
-        model = genai.GenerativeModel("gemini-flash-latest")
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                "temperature": 0,
-                "response_mime_type": "application/json",
-            },
-        )
-        data = extract_json(response.text)
-        if data:
-            return data, "ok"
-        return {}, "Gemini не вернул JSON"
-    except Exception as e:
-        return {}, f"Ошибка Gemini: {e}"
+    models_to_try = ["gemini-flash-latest", "gemini-2.0-flash", "gemini-1.5-flash-latest"]
+
+    last_error = ""
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(
+                prompt,
+                generation_config={
+                    "temperature": 0,
+                    "response_mime_type": "application/json",
+                },
+            )
+            data = extract_json(response.text)
+            if data:
+                return data, f"ok ({model_name})"
+            last_error = f"{model_name}: Gemini не вернул JSON"
+        except Exception as e:
+            last_error = f"{model_name}: {e}"
+            # пробуем следующую модель
+            continue
+
+    return {}, f"Ошибка Gemini: {last_error}"
 
 
 def prop_code(header: str):
@@ -612,6 +666,8 @@ def process_excel(uploaded_file, category_mode: str, max_products: int):
 
         found_links += len(urls)
         source_text = "\n".join(snippets) + "\n\n" + "\n\n".join(texts)
+        if not source_text.strip():
+            log_ws.append([row_num, product_name, "Источники пустые: включен AI fallback по названию товара"])
 
         spec = rule_spec(product_name, category, headers)
         if spec:
@@ -665,7 +721,7 @@ def process_excel(uploaded_file, category_mode: str, max_products: int):
             check_ws.append([row_num, product_name, "Заполнение", "", "Характеристики найдены, но ячейки не изменились"])
 
         progress.progress(idx / len(rows))
-        time.sleep(0.2)
+        time.sleep(8)  # пауза, чтобы Gemini не дал 429 quota exceeded
 
     report_rows = [
         ("Категория файла", file_category),
@@ -687,9 +743,9 @@ def process_excel(uploaded_file, category_mode: str, max_products: int):
     return output
 
 
-st.set_page_config(page_title="GD AutoFill AI Cloud", layout="centered")
-st.title("GD AutoFill AI Cloud")
-st.write("Загрузите Excel — программа найдёт характеристики в интернете и заполнит файл через Gemini.")
+st.set_page_config(page_title="GD AutoFill AI Cloud v13", layout="centered")
+st.title("GD AutoFill AI Cloud v13")
+st.write("Загрузите Excel — программа ищет характеристики в интернете. Если сайт не открылся, Gemini пробует заполнить по названию товара.")
 
 gemini_ok = bool(get_secret("GEMINI_API_KEY"))
 serper_ok = bool(get_secret("SERPER_API_KEY"))
@@ -706,8 +762,8 @@ max_products = st.number_input(
     "Сколько товаров обработать за раз",
     min_value=1,
     max_value=100,
-    value=5,
-    help="Для бесплатной версии лучше начинать с 3–5 товаров.",
+    value=30,
+    help="Для полного файла поставь 30. Если Gemini даст лимит 429 — уменьши до 5 и запускай частями.",
 )
 
 with st.expander("Проверить поиск"):
