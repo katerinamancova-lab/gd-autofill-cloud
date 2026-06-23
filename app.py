@@ -3,7 +3,6 @@ import os
 import re
 import json
 import time
-import requests
 import streamlit as st
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -16,20 +15,61 @@ try:
 except Exception:
     genai = None
 
-
 YELLOW = PatternFill(fill_type="solid", fgColor="FFFF00")
 
+MOTO_ACCESSORIES = (
+    "Шлем кроссовый Sharmax SH536 Red/Black;"
+    "Шлем кроссовый Sharmax SH336 Blue/Black;"
+    "Мотозащита Sharmax черепаха RT 8;"
+    "Очки кроссовые Sharmax Premium Black;"
+    "Очки кроссовые Sharmax Gray/Black;"
+    "Наколенники Sharmax пластик KP 48 Красные;"
+    "Наколенники Sharmax SH-32K;"
+    "Мотоперчатки Sharmax GL-SH 47 White ;"
+    "Мотоперчатки Sharmax GL-SH 48 Yellow;"
+    "Мотоперчатки Sharmax GL-SH 49 Red\n"
+)
+
 SERVICE_DEFAULTS = {
-    "Комплектация": '<ul><li style="font-size: 13pt; font-family: Acrom">Мотоцикл</li><li style="font-size: 13pt; font-family: Acrom">Сервисная книжка</li></ul>',
-    "Гарантия на товар": '<span style="font-family: Acrom; font-size: 13pt;">Гарантия на товар составляет 1 год</span>',
-    "Скидка": 11,
-    "Доступное количество": 1000,
-    "Нет в продаже": None,
-    "Сортировка": 500,
-    "Привязка к аксессуарам (новая)": "Шлем кроссовый Sharmax SH536 Red/Black;Шлем кроссовый Sharmax SH336 Blue/Black;Мотозащита Sharmax черепаха RT 8;Очки кроссовые Sharmax Premium Black;Очки кроссовые Sharmax Gray/Black;Наколенники Sharmax пластик KP 48 Красные;Наколенники Sharmax SH-32K;Мотоперчатки Sharmax GL-SH 47 White ;Мотоперчатки Sharmax GL-SH 48 Yellow;Мотоперчатки Sharmax GL-SH 49 Red\n",
+    "мотоцикл": {
+        "Комплектация": '<ul><li style="font-size: 13pt; font-family: Acrom">Мотоцикл</li><li style="font-size: 13pt; font-family: Acrom">Сервисная книжка</li></ul>',
+        "Гарантия на товар": '<span style="font-family: Acrom; font-size: 13pt;">Гарантия на товар составляет 1 год</span>',
+        "Скидка": 11,
+        "Доступное количество": 1000,
+        "Нет в продаже": None,
+        "Сортировка": 500,
+        "Привязка к аксессуарам (новая)": MOTO_ACCESSORIES,
+    },
+    "лодочный мотор": {
+        "Гарантия на товар": '<span style="font-family: Acrom; font-size: 13pt;">Гарантия на товар составляет 1 год</span>',
+        "Скидка": 11,
+        "Доступное количество": 1000,
+        "Нет в продаже": None,
+        "Сортировка": 500,
+    },
+    "лодка пвх": {
+        "Гарантия на товар": '<span style="font-family: Acrom; font-size: 13pt;">Гарантия на товар составляет 1 год</span>',
+        "Скидка": 11,
+        "Доступное количество": 1000,
+        "Нет в продаже": None,
+        "Сортировка": 500,
+    },
+    "квадроцикл": {
+        "Гарантия на товар": '<span style="font-family: Acrom; font-size: 13pt;">Гарантия на товар составляет 1 год</span>',
+        "Скидка": 11,
+        "Доступное количество": 1000,
+        "Нет в продаже": None,
+        "Сортировка": 500,
+    },
+    "гольфкар": {
+        "Гарантия на товар": '<span style="font-family: Acrom; font-size: 13pt;">Гарантия на товар составляет 1 год</span>',
+        "Скидка": 11,
+        "Доступное количество": 1000,
+        "Нет в продаже": None,
+        "Сортировка": 500,
+    },
 }
 
-# База правил не заменяет поиск, а страхует программу, чтобы файл точно заполнялся и отдавался.
 MOTO_KNOWN = {
     "voge ds800": ("VOGE", 798, "501 - 800", 94, "80 - 99", "Жидкостное", "4-тактный 2-цилиндровый", "Тур-эндуро", "Китай", "Китай", "Инжектор", 2),
     "honda cb400": ("Honda", 399, "301 - 600", 46, "41 - 60", "Жидкостное", "4-тактный 4-цилиндровый", "Дорожный", "Япония", "Япония", "Карбюратор", 4),
@@ -63,6 +103,16 @@ MOTO_KNOWN = {
 
 BRAND_DEFAULTS = {
     "honda": ("Honda", "Япония", "Япония"),
+    "tohatsu": ("Tohatsu", "Япония", "Япония"),
+    "suzuki": ("Suzuki", "Япония", "Япония"),
+    "yamaha": ("Yamaha", "Япония", "Япония"),
+    "mercury": ("Mercury", "США", "Китай"),
+    "hidea": ("Hidea", "Китай", "Китай"),
+    "hdx": ("HDX", "Китай", "Китай"),
+    "parsun": ("Parsun", "Китай", "Китай"),
+    "sea-pro": ("Sea-Pro", "Китай", "Китай"),
+    "seanovo": ("Seanovo", "Китай", "Китай"),
+    "reef rider": ("Reef Rider", "Китай", "Китай"),
     "bajaj": ("Bajaj", "Индия", "Индия"),
     "voge": ("VOGE", "Китай", "Китай"),
     "qjmotor": ("QJMotor", "Китай", "Китай"),
@@ -71,6 +121,16 @@ BRAND_DEFAULTS = {
     "benelli": ("Benelli", "Италия", "Китай"),
     "stels": ("Stels", "Россия", "Китай"),
     "benda": ("Benda", "Китай", "Китай"),
+    "linhai": ("Linhai Yamaha", "Китай", "Китай"),
+    "greencamel": ("GreenCamel", "Россия", "Китай"),
+}
+
+CATEGORY_KEYS = {
+    "лодочный мотор": ["дейдвуд", "вращение винта", "тип насадки", "передачи"],
+    "лодка пвх": ["тип днища", "плотность материала", "диаметр борта", "внутренняя длина"],
+    "квадроцикл": ["наличие псм", "лебедка", "тип привода", "защита рук", "фаркоп"],
+    "гольфкар": ["пассажировместимость", "мощность (вт)", "запас хода", "педаль акселератора"],
+    "мотоцикл": ["тип мотоцикла", "наличие птс", "колеса передние", "колеса задние"],
 }
 
 
@@ -84,6 +144,23 @@ def get_secret(name: str) -> str:
 
 def header_map(ws):
     return {str(ws.cell(1, c).value or "").strip(): c for c in range(1, ws.max_column + 1)}
+
+
+def detect_category(headers, first_names):
+    joined = " ".join(str(h or "").lower() for h in headers)
+    for cat, keys in CATEGORY_KEYS.items():
+        if any(k in joined for k in keys):
+            return cat
+    names = " ".join(first_names).lower()
+    if any(x in names for x in ["bf", "mfs", "mercury", "tohatsu", "hidea", "parsun", "sea-pro", "suzuki df"]):
+        return "лодочный мотор"
+    if any(x in names for x in ["пвх", "лодка", "нднд", "hunter", "байкал", "сапфир"]):
+        return "лодка пвх"
+    if any(x in names for x in ["atv", "outlander", "segway", "linhai", "квадроцикл"]):
+        return "квадроцикл"
+    if any(x in names for x in ["greencamel", "гольфкар", "сонора"]):
+        return "гольфкар"
+    return "мотоцикл"
 
 
 def set_if_col(ws, hmap, row, header, value):
@@ -146,7 +223,7 @@ def gemini_by_name(product_name, headers, category):
 - не заполняй УИД, UID, Активность, Розничная цена;
 - если точную цифру не знаешь — пропусти;
 - бренды/страны/тип двигателя/топливо/запуск можно определить логически;
-- заполни максимум характеристик.
+- заполни максимум характеристик по названию модели и категории.
 """
 
     for model_name in ["gemini-flash-latest", "gemini-2.0-flash", "gemini-1.5-flash-latest"]:
@@ -165,10 +242,46 @@ def gemini_by_name(product_name, headers, category):
     return {}, f"Gemini не сработал: {last if 'last' in locals() else ''}"
 
 
-def rules_motorcycle(product_name):
-    p = product_name.lower()
-    spec = {}
+def range_hp_motor(hp):
+    try: hp = float(hp)
+    except Exception: return ""
+    if hp <= 3.9: return "до 3.9"
+    if hp <= 6.9: return "4 - 6.9"
+    if hp <= 9.8: return "7 - 9.8"
+    if hp <= 20: return "9.9 - 20"
+    if hp <= 39: return "21 - 39"
+    if hp <= 59: return "40 - 59"
+    if hp <= 79: return "60 - 79"
+    if hp <= 130: return "80 - 130"
+    if hp <= 150: return "131 - 150"
+    return "Более 151"
 
+
+def hp_from_name(name):
+    p = name.lower()
+    for pat in [r"bf\s*([0-9]{2,3})", r"f\s*([0-9]{2,3})", r"mfs\s*([0-9]{2,3})", r"df\s*([0-9]{2,3})", r"hdef\s*([0-9]{2,3})", r"hd\s*([0-9]{2,3})", r"t\s*([0-9]{2,3})", r"([0-9]{2,3})\s*л\.?с"]:
+        m = re.search(pat, p)
+        if m:
+            v = int(m.group(1))
+            if 2 <= v <= 350:
+                return v
+    return None
+
+
+def apply_brand(spec, name):
+    p = name.lower()
+    for key, (brand, country, made) in BRAND_DEFAULTS.items():
+        if key in p:
+            spec.setdefault("Бренд [BRAND]", brand)
+            spec.setdefault("Страна бренда [BRAND_COUNTRY]", country)
+            spec.setdefault("Страна производства [MANUFACTURER]", made)
+            return spec
+    return spec
+
+
+def rules_motorcycle(name):
+    p = name.lower()
+    spec = {}
     for key, row in MOTO_KNOWN.items():
         if key in p:
             brand, cc, cc_range, hp, hp_range, cooling, engine, mtype, bc, made, fuel, cyl = row
@@ -187,16 +300,7 @@ def rules_motorcycle(product_name):
                 "Количество цилиндров [CYLINDERS]": cyl,
             })
             break
-
-    # Если модель новая, хотя бы определяем бренд/страны
-    if "Бренд [BRAND]" not in spec:
-        for key, (brand, bc, made) in BRAND_DEFAULTS.items():
-            if key in p:
-                spec["Бренд [BRAND]"] = brand
-                spec["Страна бренда [BRAND_COUNTRY]"] = bc
-                spec["Страна производства [MANUFACTURER]"] = made
-                break
-
+    apply_brand(spec, name)
     spec.setdefault("Гарантия [WARRANTY]", "1 год")
     spec.setdefault("Наличие ПТС [NALICHIE_PTS]", "Да")
     spec.setdefault("Система запуска [STARTING_SYSTEM]", "Электростартер")
@@ -206,11 +310,107 @@ def rules_motorcycle(product_name):
     spec.setdefault("Тип двигателя [TYPE_ENGINE]", "Бензиновый")
     spec.setdefault("Трансмиссия [TRANSMISSION]", "Механическая")
     spec.setdefault("Карбюратор [Carburetor]", "Нет")
-
-    for h, v in SERVICE_DEFAULTS.items():
-        spec[h] = v
-
     return spec
+
+
+def rules_boat_motor(name):
+    p = name.lower()
+    spec = {}
+    apply_brand(spec, name)
+    hp = hp_from_name(name)
+    if hp:
+        spec["Мощность, л.с. [POWER_HP1]"] = hp
+        spec["Мощность (л.с.) [POWER_HP]"] = range_hp_motor(hp)
+        spec["Мощность, л.с. [POWER_HP]"] = hp
+        spec["Мощность (кВт) [POWER_KW]"] = round(hp * 0.7355, 1)
+    spec.setdefault("Управление [OPERATION]", "Румпельное" if any(x in p for x in ["fh", "румп", "hes"]) else "Дистанционное")
+    spec.setdefault("Система запуска [STARTING_SYSTEM]", "Электростартер" if any(x in p for x in ["e", "etl", "elpt", "xrtu", "efi"]) else "Ручной стартер/электростартер")
+    spec.setdefault("Дейдвуд [DEADWOOD]", "635 (XL)" if any(x in p for x in ["xrtu", "fex", "xl"]) else ("508 (L)" if any(x in p for x in ["etl", "elpt", "fel", "lrt", "fvel"]) else "381 (S)"))
+    spec.setdefault("Тип насадки [NOZZLETYPE]", "Водомёт" if "jet" in p or "водом" in p else "Винт")
+    spec.setdefault("Система подачи топлива [Fuel_supply_system]", "Инжектор" if "efi" in p else "Карбюратор")
+    spec.setdefault("Система подъёма [LIFTING_SYSTEM]", "Гидравлическая" if any(x in p for x in ["pt", "trim", "xrtu", "elpt", "btx"]) else "Ручная")
+    spec.setdefault("Количество тактов [STROKE]", "2" if "2 такт" in p or "2-такт" in p or "t 40" in p else "4")
+    spec.setdefault("Охлаждение [COOLING]", "Водяное")
+    spec.setdefault("Тип двигателя [TYPE_ENGINE]", "Бензиновый")
+    spec.setdefault("Передачи [GEAR]", "F-N-R")
+    spec.setdefault("Тип топлива [TYPE_FUEL]", "АИ92-95")
+    spec.setdefault("Вращение винта [ROTATION_SCREW]", "Водомётная насадка" if spec.get("Тип насадки [NOZZLETYPE]") == "Водомёт" else "Правое")
+    spec.setdefault("Гарантия [WARRANTY]", "5 лет" if any(x in p for x in ["honda", "tohatsu"]) else "3 года")
+    return spec
+
+
+def rules_pvc_boat(name):
+    p = name.lower()
+    spec = {}
+    apply_brand(spec, name)
+    spec.setdefault("Тип лодки [TYPE_BOAT]", "Под мотор")
+    spec.setdefault("Гарантия [WARRANTY]", "1 год")
+    if "нднд" in p or "air" in p or "aero" in p:
+        spec["Тип днища [TYPE_BOTTOM]"] = "Надувное, низкого давления"
+    elif any(x in p for x in ["ал", "al"]):
+        spec["Тип днища [TYPE_BOTTOM]"] = "Алюминиевые пайолы"
+    else:
+        spec["Тип днища [TYPE_BOTTOM]"] = "Надувное, низкого давления"
+    spec.setdefault("Сливной клапан [DRAIN_VALVE]", "Есть")
+    spec.setdefault("Надувной киль [INFLATABLE_KEEL]", "Есть")
+    return spec
+
+
+def rules_quad(name):
+    p = name.lower()
+    spec = {}
+    apply_brand(spec, name)
+    spec.setdefault("Охлаждение [COOLING]", "Жидкостное" if any(x in p for x in ["700", "800", "1000", "efi"]) else "Воздушное")
+    spec.setdefault("Тип привода [Tipprivoda]", "Полный")
+    spec.setdefault("Система привода [DRIVE_SYSTEM]", "Карданный")
+    spec.setdefault("Трансмиссия [TRANSMISSION]", "Вариатор")
+    spec.setdefault("Наличие ПСМ [NALICHIE_PSM]", "Есть" if "псм" in p else "Нет")
+    spec.setdefault("Тип двигателя [TYPE_ENGINE]", "Бензиновый")
+    spec.setdefault("Система подачи топлива [Fuel_supply_system]", "Инжектор" if "efi" in p else "Карбюратор")
+    spec.setdefault("Лебедка [WINCH]", "Есть")
+    spec.setdefault("Классификация [CLASSIFICATION]", "Утилитарный")
+    spec.setdefault("Система запуска [STARTING_SYSTEM]", "Электростартер")
+    spec.setdefault("Материал рамы [FRAME_MATERIAL]", "Сталь")
+    spec.setdefault("Гарантия [WARRANTY]", "1 год")
+    return spec
+
+
+def rules_golfcar(name):
+    p = name.lower()
+    spec = {}
+    apply_brand(spec, name)
+    spec.setdefault("Тип двигателя [TYPE_ENGINE]", "Электрический")
+    spec.setdefault("Система запуска [STARTING_SYSTEM]", "Электростартер")
+    spec.setdefault("Система привода", "Полный привод" if "4x4" in p else "Задний привод")
+    spec.setdefault("Пассажировместимость", "4" if "2+2" in p else "2")
+    spec.setdefault("Страна бренда [BRAND_COUNTRY]", "Россия")
+    spec.setdefault("Страна производства [MANUFACTURER]", "Китай")
+    spec.setdefault("Гарантия [WARRANTY]", "1 год")
+    return spec
+
+
+def make_rules(name, category):
+    if category == "мотоцикл" or category in ["дорожный мотоцикл", "внедорожный мотоцикл"]:
+        spec = rules_motorcycle(name)
+        spec.update(SERVICE_DEFAULTS.get("мотоцикл", {}))
+        return spec
+    if category == "лодочный мотор":
+        spec = rules_boat_motor(name)
+        spec.update(SERVICE_DEFAULTS.get("лодочный мотор", {}))
+        return spec
+    if category == "лодка пвх":
+        spec = rules_pvc_boat(name)
+        spec.update(SERVICE_DEFAULTS.get("лодка пвх", {}))
+        return spec
+    if category == "квадроцикл":
+        spec = rules_quad(name)
+        spec.update(SERVICE_DEFAULTS.get("квадроцикл", {}))
+        return spec
+    if category == "гольфкар":
+        spec = rules_golfcar(name)
+        spec.update(SERVICE_DEFAULTS.get("гольфкар", {}))
+        return spec
+    return {}
 
 
 def process_excel(uploaded_file, category_mode, max_products, use_ai):
@@ -219,7 +419,6 @@ def process_excel(uploaded_file, category_mode, max_products, use_ai):
     hmap = header_map(ws)
     headers = list(hmap.keys())
 
-    # Удаляем старые отчёты
     for s in ["Отчет", "Проверить", "Лог поиска"]:
         if s in wb.sheetnames:
             del wb[s]
@@ -236,21 +435,25 @@ def process_excel(uploaded_file, category_mode, max_products, use_ai):
             rows.append((r, name))
     rows = rows[:max_products]
 
+    if category_mode == "Авто по шаблону":
+        category = detect_category(headers, [n for _, n in rows[:5]])
+    else:
+        category = category_mode
+
     changed = 0
     ai_ok = 0
     ai_fail = 0
     rules_ok = 0
-
     progress = st.progress(0)
 
     for idx, (r, name) in enumerate(rows, start=1):
-        spec = {}
-        if category_mode == "мотоцикл":
-            spec.update(rules_motorcycle(name))
+        row_category = detect_category(headers, [name]) if category_mode == "Авто по строкам" else category
+        spec = make_rules(name, row_category)
+        if spec:
             rules_ok += 1
 
         if use_ai:
-            ai_spec, status = gemini_by_name(name, headers, category_mode)
+            ai_spec, status = gemini_by_name(name, headers, row_category)
             if ai_spec:
                 spec.update(ai_spec)
                 ai_ok += 1
@@ -274,16 +477,16 @@ def process_excel(uploaded_file, category_mode, max_products, use_ai):
 
         progress.progress(idx / len(rows))
 
-    report_rows = [
-        ["Категория", category_mode],
+    for row in [
+        ["Категория", category],
+        ["Режим", category_mode],
         ["Обработано товаров", len(rows)],
         ["Правила сработали", rules_ok],
         ["Gemini успешно", ai_ok],
         ["Gemini ошибки", ai_fail],
         ["Изменено ячеек", changed],
-        ["Режим", "стабильный: файл возвращается всегда"],
-    ]
-    for row in report_rows:
+        ["Режим стабильности", "файл возвращается всегда"],
+    ]:
         report.append(row)
 
     out = io.BytesIO()
@@ -292,14 +495,28 @@ def process_excel(uploaded_file, category_mode, max_products, use_ai):
     return out
 
 
-st.set_page_config(page_title="GD AutoFill Stable v14", layout="centered")
-st.title("GD AutoFill Stable v14")
-st.write("Стабильная версия: файл всегда отдаётся обратно. ИИ можно включать только для новых товаров.")
+st.set_page_config(page_title="GD AutoFill Stable v15", layout="centered")
+st.title("GD AutoFill Stable v15")
+st.write("Стабильная версия со всеми основными категориями. Файл всегда отдаётся обратно.")
 
 gemini_ok = bool(get_secret("GEMINI_API_KEY"))
 st.info(f"Gemini API: {'✅ найден' if gemini_ok else '❌ не найден'}")
 
-category_mode = st.selectbox("Категория", ["мотоцикл"])
+category_mode = st.selectbox(
+    "Категория",
+    [
+        "Авто по шаблону",
+        "Авто по строкам",
+        "лодочный мотор",
+        "лодка пвх",
+        "квадроцикл",
+        "дорожный мотоцикл",
+        "внедорожный мотоцикл",
+        "мотоцикл",
+        "гольфкар",
+    ],
+)
+
 max_products = st.number_input("Сколько товаров обработать за раз", min_value=1, max_value=100, value=30)
 use_ai = st.checkbox("Дозаполнять новые товары через Gemini AI", value=False)
 
@@ -318,7 +535,7 @@ if uploaded:
                 st.download_button(
                     "Скачать заполненный Excel",
                     data=result,
-                    file_name=uploaded.name.replace(".xlsx", "_STABLE_v14.xlsx"),
+                    file_name=uploaded.name.replace(".xlsx", "_STABLE_v15.xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             except Exception as e:
