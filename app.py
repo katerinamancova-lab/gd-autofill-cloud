@@ -310,7 +310,7 @@ def call_gemini(product_name: str, category: str, headers: list[str], source_tex
 """
 
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-flash-latest")
         response = model.generate_content(
             prompt,
             generation_config={
