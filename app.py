@@ -3,6 +3,8 @@ import os
 import re
 import json
 import time
+import requests
+from bs4 import BeautifulSoup
 import streamlit as st
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -199,7 +201,133 @@ def extract_json(text):
     return {}
 
 
-def gemini_by_name(product_name, headers, category):
+
+BAD_DOMAINS = [
+    "avito", "ozon", "wildberries", "youtube", "vk.com", "dzen",
+    "instagram", "pinterest", "images", "cart", "login", "compare",
+    "forum", "drive2", "market.yandex", "maps.yandex"
+]
+
+TRUSTED_DOMAINS = [
+    "globaldrive.ru", "more-motorov-spb.ru", "rollingmoto.ru",
+    "motomarine.ru", "honda", "tohatsu", "mercury", "suzuki",
+    "yamaha", "hidea", "parsun", "sea-pro", "linhai", "greencamel",
+    "brp", "can-am", "segway", "bajaj", "benda", "voge", "qjmotor",
+    "royalenfield", "ktm", "benelli", "stels", "mymotors", "hondaset"
+]
+
+HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 Chrome/124 Safari/537.36",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+}
+
+
+def is_bad_url(url):
+    u = (url or "").lower()
+    return any(x in u for x in BAD_DOMAINS)
+
+
+def score_url(url, product_name):
+    u = (url or "").lower()
+    p = (product_name or "").lower()
+    if is_bad_url(u):
+        return -1000
+    score = 0
+    if any(d in u for d in TRUSTED_DOMAINS):
+        score += 100
+    for token in re.findall(r"[a-zA-Zа-яА-Я0-9]+", p):
+        if len(token) > 2 and token.lower() in u:
+            score += 7
+    if any(x in u for x in ["product", "catalog", "character", "spec", "harakter", "kharakteristiki"]):
+        score += 15
+    return score
+
+
+def search_serper(query, max_results=10):
+    api_key = get_secret("SERPER_API_KEY")
+    if not api_key:
+        return [], [], "SERPER_API_KEY не найден"
+
+    try:
+        r = requests.post(
+            "https://google.serper.dev/search",
+            json={"q": query, "gl": "ru", "hl": "ru", "num": max_results},
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            timeout=20,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        return [], [], f"Ошибка Serper: {e}"
+
+    links = []
+    snippets = []
+    for item in data.get("organic", []):
+        link = item.get("link")
+        if link and not is_bad_url(link):
+            links.append(link)
+            snippets.append((item.get("title", "") + " " + item.get("snippet", "")).strip())
+    return links, snippets, "ok"
+
+
+def find_pages(product_name, category, max_pages=5):
+    queries = [
+        f'"{product_name}" характеристики',
+        f'"{product_name}" технические характеристики',
+        f'{product_name} {category} характеристики',
+        f'{product_name} specs',
+        f'{product_name} site:globaldrive.ru',
+        f'{product_name} site:more-motorov-spb.ru',
+        f'{product_name} site:rollingmoto.ru',
+        f'{product_name} site:motomarine.ru',
+    ]
+
+    all_links = []
+    all_snippets = []
+    logs = []
+
+    for q in queries:
+        links, snippets, status = search_serper(q)
+        all_links.extend(links)
+        all_snippets.extend(snippets)
+        logs.append(f"Запрос: {q} | найдено: {len(links)} | {status}")
+
+    unique = []
+    seen = set()
+    for url in all_links:
+        if url not in seen:
+            seen.add(url)
+            unique.append(url)
+
+    ranked = sorted(unique, key=lambda u: score_url(u, product_name), reverse=True)
+    return ranked[:max_pages], all_snippets[:20], logs
+
+
+def fetch_text(url):
+    try:
+        r = requests.get(url, headers=HTTP_HEADERS, timeout=15)
+        r.raise_for_status()
+    except Exception as e:
+        return "", f"не открылось: {e}"
+
+    # Если сайт показывает капчу/защиту, честно пишем в лог и идём дальше.
+    html = r.text or ""
+    low = html.lower()
+    if any(x in low for x in ["captcha", "recaptcha", "cloudflare", "access denied", "докажите", "робот"]):
+        return "", "сайт просит капчу/антибот, пропущено"
+
+    try:
+        soup = BeautifulSoup(html, "lxml")
+        for tag in soup(["script", "style", "noscript", "svg", "footer", "nav"]):
+            tag.decompose()
+        text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+        return text[:8000], "ok"
+    except Exception as e:
+        return "", f"ошибка чтения страницы: {e}"
+
+
+
+def gemini_by_name(product_name, headers, category, source_text=""):
     api_key = get_secret("GEMINI_API_KEY")
     if not api_key or genai is None:
         return {}, "Gemini недоступен"
@@ -210,6 +338,21 @@ def gemini_by_name(product_name, headers, category):
         if h and not any(x in h.lower() for x in ["uid", "уид", "активность", "розничная цена"])
     ]
 
+    source_part = ""
+    if source_text and source_text.strip():
+        source_part = f"""
+Найденные источники из интернета:
+{source_text[:18000]}
+
+Используй источники как главный источник данных.
+"""
+    else:
+        source_part = """
+Источники не открылись или сайт заблокировал доступ.
+Заполни по названию товара, категории и технической логике.
+Если точную цифру не знаешь — пропусти.
+"""
+
     prompt = f"""
 Верни только JSON для заполнения Excel.
 Товар: {product_name}
@@ -218,15 +361,17 @@ def gemini_by_name(product_name, headers, category):
 Колонки Excel:
 {json.dumps(safe_headers, ensure_ascii=False)}
 
+{source_part}
+
 Правила:
 - ключи JSON должны точно совпадать с колонками;
 - не заполняй УИД, UID, Активность, Розничная цена;
 - если точную цифру не знаешь — пропусти;
 - бренды/страны/тип двигателя/топливо/запуск можно определить логически;
-- заполни максимум характеристик по названию модели и категории.
+- заполни максимум характеристик.
 """
 
-    for model_name in ["gemini-flash-latest", "gemini-2.0-flash", "gemini-1.5-flash-latest"]:
+    for model_name in ["gemini-2.0-flash", "gemini-flash-latest", "gemini-2.5-flash"]:
         try:
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(
@@ -239,7 +384,7 @@ def gemini_by_name(product_name, headers, category):
         except Exception as e:
             last = str(e)
             continue
-    return {}, f"Gemini не сработал: {last if 'last' in locals() else ''}"
+    return {}, f"Gemini не сработал, файл всё равно будет создан. Ошибка: {last if 'last' in locals() else ''}"
 
 
 def range_hp_motor(hp):
@@ -413,7 +558,7 @@ def make_rules(name, category):
     return {}
 
 
-def process_excel(uploaded_file, category_mode, max_products, use_ai):
+def process_excel(uploaded_file, category_mode, max_products, use_ai, use_search):
     wb = load_workbook(uploaded_file)
     ws = wb.active
     hmap = header_map(ws)
@@ -452,8 +597,20 @@ def process_excel(uploaded_file, category_mode, max_products, use_ai):
         if spec:
             rules_ok += 1
 
+        source_text = ""
+        if use_search:
+            urls, snippets, search_logs = find_pages(name, row_category)
+            source_text = "\n".join(snippets)
+            for url in urls:
+                txt, fetch_status = fetch_text(url)
+                check.append([r, name, "Источник", url, fetch_status])
+                if txt:
+                    source_text += "\n\n" + txt
+            if not urls:
+                check.append([r, name, "Поиск", "", "Ссылки не найдены, будет fallback через AI по названию"])
+
         if use_ai:
-            ai_spec, status = gemini_by_name(name, headers, row_category)
+            ai_spec, status = gemini_by_name(name, headers, row_category, source_text)
             if ai_spec:
                 spec.update(ai_spec)
                 ai_ok += 1
@@ -495,9 +652,9 @@ def process_excel(uploaded_file, category_mode, max_products, use_ai):
     return out
 
 
-st.set_page_config(page_title="GD AutoFill Stable v15", layout="centered")
-st.title("GD AutoFill Stable v15")
-st.write("Стабильная версия со всеми основными категориями. Файл всегда отдаётся обратно.")
+st.set_page_config(page_title="GD AutoFill Stable v17", layout="centered")
+st.title("GD AutoFill Stable v17")
+st.write("Стабильная версия со всеми основными категориями. Ищет характеристики в интернете, пропускает капчу и дозаполняет через Gemini.")
 
 gemini_ok = bool(get_secret("GEMINI_API_KEY"))
 st.info(f"Gemini API: {'✅ найден' if gemini_ok else '❌ не найден'}")
@@ -517,7 +674,8 @@ category_mode = st.selectbox(
     ],
 )
 
-max_products = st.number_input("Сколько товаров обработать за раз", min_value=1, max_value=100, value=30)
+max_products = st.number_input("Сколько товаров обработать за раз", min_value=1, max_value=500, value=500, help="500 означает: обработать все строки, которые есть в файле.")
+use_search = st.checkbox("Искать характеристики в интернете через Serper/Google", value=True)
 use_ai = st.checkbox("Дозаполнять новые товары через Gemini AI", value=False)
 
 if use_ai:
@@ -527,15 +685,29 @@ uploaded = st.file_uploader("Загрузите Excel", type=["xlsx"])
 
 if uploaded:
     st.success(f"Файл загружен: {uploaded.name}")
+    try:
+        _wb_preview = load_workbook(uploaded, read_only=True)
+        _ws_preview = _wb_preview.active
+        _names_preview = []
+        for _r in range(2, _ws_preview.max_row + 1):
+            _name = str(_ws_preview.cell(_r, 1).value or "").strip()
+            if _name:
+                _names_preview.append(_name)
+        st.info(f"В файле найдено товаров: {len(_names_preview)}")
+        uploaded.seek(0)
+    except Exception as _e:
+        st.warning(f"Не смогла посчитать строки файла: {_e}")
+        uploaded.seek(0)
+
     if st.button("Заполнить и скачать"):
         with st.spinner("Заполняю файл..."):
             try:
-                result = process_excel(uploaded, category_mode, int(max_products), use_ai)
+                result = process_excel(uploaded, category_mode, int(max_products), use_ai, use_search)
                 st.success("Готово")
                 st.download_button(
                     "Скачать заполненный Excel",
                     data=result,
-                    file_name=uploaded.name.replace(".xlsx", "_STABLE_v15.xlsx"),
+                    file_name=uploaded.name.replace(".xlsx", "_STABLE_v17.xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             except Exception as e:
