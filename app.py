@@ -205,21 +205,43 @@ def extract_json(text):
 BAD_DOMAINS = [
     "avito", "ozon", "wildberries", "youtube", "vk.com", "dzen",
     "instagram", "pinterest", "images", "cart", "login", "compare",
-    "forum", "drive2", "market.yandex", "maps.yandex"
+    "forum", "drive2", "market.yandex", "maps.yandex", "translate.yandex",
+    "2gis", "wikipedia"
 ]
 
 TRUSTED_DOMAINS = [
     "globaldrive.ru", "more-motorov-spb.ru", "rollingmoto.ru",
-    "motomarine.ru", "honda", "tohatsu", "mercury", "suzuki",
+    "motomarine.ru", "vodnik", "honda", "tohatsu", "mercury", "suzuki",
     "yamaha", "hidea", "parsun", "sea-pro", "linhai", "greencamel",
     "brp", "can-am", "segway", "bajaj", "benda", "voge", "qjmotor",
-    "royalenfield", "ktm", "benelli", "stels", "mymotors", "hondaset"
+    "royalenfield", "ktm", "benelli", "stels", "mymotors", "hondaset",
+    "sprmotors", "motoland", "kayo", "regulmoto", "cfmoto", "sharmax",
+    "snowmax", "atv", "quad", "pitbike", "pit-bike"
+]
+
+PRIORITY_SITES = [
+    "globaldrive.ru",
+    "rollingmoto.ru",
+    "more-motorov-spb.ru",
+    "motomarine.ru",
+    "vodnik.ru",
+    "mymotors.ru",
+    "hondaset.ru",
 ]
 
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 Chrome/124 Safari/537.36",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
+
+
+def clean_product_name(name):
+    """Очищает название для поиска, но не теряет модель."""
+    s = str(name or "").strip()
+    s = re.sub(r"\([^)]*(цвет|red|black|blue|green|white|желт|красн|черн|син|бел|202[0-9])[^)]*\)", " ", s, flags=re.I)
+    s = re.sub(r"\b(новый|new|202[0-9]|год|цвет|красный|черный|чёрный|синий|белый|желтый|зелёный|зеленый)\b", " ", s, flags=re.I)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s or str(name or "").strip()
 
 
 def is_bad_url(url):
@@ -229,17 +251,24 @@ def is_bad_url(url):
 
 def score_url(url, product_name):
     u = (url or "").lower()
-    p = (product_name or "").lower()
+    p = clean_product_name(product_name).lower()
     if is_bad_url(u):
         return -1000
+
     score = 0
     if any(d in u for d in TRUSTED_DOMAINS):
         score += 100
-    for token in re.findall(r"[a-zA-Zа-яА-Я0-9]+", p):
-        if len(token) > 2 and token.lower() in u:
-            score += 7
-    if any(x in u for x in ["product", "catalog", "character", "spec", "harakter", "kharakteristiki"]):
-        score += 15
+    if any(d in u for d in PRIORITY_SITES):
+        score += 80
+
+    tokens = [t.lower() for t in re.findall(r"[a-zA-Zа-яА-Я0-9]+", p) if len(t) > 1]
+    for t in tokens:
+        if t in u:
+            score += 8
+
+    if any(x in u for x in ["product", "catalog", "character", "spec", "harakter", "kharakteristiki", "products"]):
+        score += 20
+
     return score
 
 
@@ -270,24 +299,38 @@ def search_serper(query, max_results=10):
     return links, snippets, "ok"
 
 
-def find_pages(product_name, category, max_pages=5):
+def build_search_queries(product_name, category):
+    clean = clean_product_name(product_name)
     queries = [
-        f'"{product_name}" характеристики',
-        f'"{product_name}" технические характеристики',
-        f'{product_name} {category} характеристики',
-        f'{product_name} specs',
-        f'{product_name} site:globaldrive.ru',
-        f'{product_name} site:more-motorov-spb.ru',
-        f'{product_name} site:rollingmoto.ru',
-        f'{product_name} site:motomarine.ru',
+        f'"{clean}" характеристики',
+        f'"{clean}" технические характеристики',
+        f'"{clean}" specs',
+        f'"{clean}" specification',
+        f'{clean} {category} характеристики',
+        f'{clean} купить характеристики',
     ]
 
+    for site in PRIORITY_SITES:
+        queries.append(f'"{clean}" site:{site}')
+
+    # Поиск без кавычек иногда находит карточки лучше
+    queries += [
+        f'{clean} характеристики',
+        f'{clean} технические характеристики',
+        f'{clean} отзывы характеристики',
+    ]
+
+    return list(dict.fromkeys(queries))
+
+
+def find_pages(product_name, category, max_pages=10):
+    queries = build_search_queries(product_name, category)
     all_links = []
     all_snippets = []
     logs = []
 
     for q in queries:
-        links, snippets, status = search_serper(q)
+        links, snippets, status = search_serper(q, 10)
         all_links.extend(links)
         all_snippets.extend(snippets)
         logs.append(f"Запрос: {q} | найдено: {len(links)} | {status}")
@@ -300,7 +343,7 @@ def find_pages(product_name, category, max_pages=5):
             unique.append(url)
 
     ranked = sorted(unique, key=lambda u: score_url(u, product_name), reverse=True)
-    return ranked[:max_pages], all_snippets[:20], logs
+    return ranked[:max_pages], all_snippets[:40], logs
 
 
 def fetch_text(url):
@@ -310,10 +353,9 @@ def fetch_text(url):
     except Exception as e:
         return "", f"не открылось: {e}"
 
-    # Если сайт показывает капчу/защиту, честно пишем в лог и идём дальше.
     html = r.text or ""
     low = html.lower()
-    if any(x in low for x in ["captcha", "recaptcha", "cloudflare", "access denied", "докажите", "робот"]):
+    if any(x in low for x in ["captcha", "recaptcha", "cloudflare", "access denied", "докажите", "робот", "checking your browser"]):
         return "", "сайт просит капчу/антибот, пропущено"
 
     try:
@@ -321,7 +363,7 @@ def fetch_text(url):
         for tag in soup(["script", "style", "noscript", "svg", "footer", "nav"]):
             tag.decompose()
         text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
-        return text[:8000], "ok"
+        return text[:10000], "ok"
     except Exception as e:
         return "", f"ошибка чтения страницы: {e}"
 
@@ -338,37 +380,42 @@ def gemini_by_name(product_name, headers, category, source_text=""):
         if h and not any(x in h.lower() for x in ["uid", "уид", "активность", "розничная цена"])
     ]
 
-    source_part = ""
     if source_text and source_text.strip():
         source_part = f"""
-Найденные источники из интернета:
-{source_text[:18000]}
+НАЙДЕННЫЕ ИСТОЧНИКИ ИЗ ИНТЕРНЕТА:
+{source_text[:22000]}
 
 Используй источники как главный источник данных.
 """
     else:
         source_part = """
-Источники не открылись или сайт заблокировал доступ.
-Заполни по названию товара, категории и технической логике.
-Если точную цифру не знаешь — пропусти.
+Источники не открылись или были закрыты капчей.
+Заполни по названию товара, категории, маркировке модели и технической логике.
+Если точную цифру не знаешь — пропусти поле.
 """
 
     prompt = f"""
+Ты профессиональный контент-менеджер интернет-магазина техники.
 Верни только JSON для заполнения Excel.
-Товар: {product_name}
-Категория: {category}
 
-Колонки Excel:
+ТОВАР:
+{product_name}
+
+КАТЕГОРИЯ:
+{category}
+
+КОЛОНКИ EXCEL:
 {json.dumps(safe_headers, ensure_ascii=False)}
 
 {source_part}
 
-Правила:
+ПРАВИЛА:
 - ключи JSON должны точно совпадать с колонками;
 - не заполняй УИД, UID, Активность, Розничная цена;
 - если точную цифру не знаешь — пропусти;
-- бренды/страны/тип двигателя/топливо/запуск можно определить логически;
-- заполни максимум характеристик.
+- если колонка имеет понятный справочный формат — пиши коротко: Инжектор, Карбюратор, Жидкостное, Электростартер, Бензиновый;
+- заполни максимум характеристик;
+- если источников мало, используй техническую логику, но не выдумывай точные цифры.
 """
 
     for model_name in ["gemini-2.0-flash", "gemini-flash-latest", "gemini-2.5-flash"]:
@@ -652,9 +699,9 @@ def process_excel(uploaded_file, category_mode, max_products, use_ai, use_search
     return out
 
 
-st.set_page_config(page_title="GD AutoFill Stable v17", layout="centered")
-st.title("GD AutoFill Stable v17")
-st.write("Стабильная версия со всеми основными категориями. Ищет характеристики в интернете, пропускает капчу и дозаполняет через Gemini.")
+st.set_page_config(page_title="GD AutoFill Universal v18", layout="centered")
+st.title("GD AutoFill Universal v18")
+st.write("Стабильная версия со всеми основными категориями. Универсальный поиск: Serper/Google → источники → Gemini → Excel. Капчу пропускает и берёт другой источник.")
 
 gemini_ok = bool(get_secret("GEMINI_API_KEY"))
 st.info(f"Gemini API: {'✅ найден' if gemini_ok else '❌ не найден'}")
@@ -707,7 +754,7 @@ if uploaded:
                 st.download_button(
                     "Скачать заполненный Excel",
                     data=result,
-                    file_name=uploaded.name.replace(".xlsx", "_STABLE_v17.xlsx"),
+                    file_name=uploaded.name.replace(".xlsx", "_UNIVERSAL_v18.xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             except Exception as e:
