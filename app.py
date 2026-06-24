@@ -29,6 +29,11 @@ def get_secret(name: str) -> str:
     return str(value or "").strip()
 
 
+
+def header_map(ws):
+    return {str(ws.cell(1, c).value or "").strip(): c for c in range(1, ws.max_column + 1)}
+
+
 BAD_DOMAINS = [
     "avito", "ozon", "wildberries", "youtube", "vk.com", "dzen",
     "instagram", "pinterest", "images", "cart", "login", "compare",
@@ -239,6 +244,33 @@ def fetch_text(url):
     except Exception as e:
         return "", f"ошибка чтения страницы: {e}"
 
+
+
+
+CATEGORY_KEYS = {
+    "лодочный мотор": ["дейдвуд", "вращение винта", "тип насадки", "передачи"],
+    "лодка пвх": ["тип днища", "плотность материала", "диаметр борта", "внутренняя длина"],
+    "квадроцикл": ["наличие псм", "лебедка", "тип привода", "защита рук", "фаркоп"],
+    "гольфкар": ["пассажировместимость", "мощность (вт)", "запас хода", "педаль акселератора"],
+    "мотоцикл": ["тип мотоцикла", "наличие птс", "колеса передние", "колеса задние"],
+}
+
+
+def detect_category(headers, first_names):
+    joined = " ".join(str(h or "").lower() for h in headers)
+    for cat, keys in CATEGORY_KEYS.items():
+        if any(k in joined for k in keys):
+            return cat
+    names = " ".join(first_names).lower()
+    if any(x in names for x in ["bf", "mfs", "mercury", "tohatsu", "hidea", "parsun", "sea-pro", "suzuki df"]):
+        return "лодочный мотор"
+    if any(x in names for x in ["пвх", "лодка", "нднд", "airdeck", "союз", "байкал", "сапфир"]):
+        return "лодка пвх"
+    if any(x in names for x in ["atv", "outlander", "segway", "linhai", "квадроцикл", "sprmotors", "blade"]):
+        return "квадроцикл"
+    if any(x in names for x in ["greencamel", "гольфкар", "сонора"]):
+        return "гольфкар"
+    return "мотоцикл"
 
 
 def extract_json(text):
@@ -619,8 +651,8 @@ def process_excel(uploaded_file, category_mode, max_products, use_search, use_ai
     return out
 
 
-st.set_page_config(page_title="GD AutoFill MultiSearch v21.1", layout="centered")
-st.title("GD AutoFill MultiSearch v21.1")
+st.set_page_config(page_title="GD AutoFill MultiSearch v21.2.2", layout="centered")
+st.title("GD AutoFill MultiSearch v21.2.2")
 st.write("Мультипоиск: Serper/Google + DuckDuckGo + приоритетные сайты. Если капча — берёт другой источник, если данных мало — помогает Gemini.")
 
 gemini_ok = bool(get_secret("GEMINI_API_KEY"))
@@ -663,7 +695,7 @@ if uploaded:
                 st.download_button(
                     "Скачать заполненный Excel",
                     data=result,
-                    file_name=uploaded.name.replace(".xlsx", "_MULTISEARCH_v21_1.xlsx"),
+                    file_name=uploaded.name.replace(".xlsx", "_MULTISEARCH_v21_2.xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             except Exception as e:
