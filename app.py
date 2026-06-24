@@ -20,6 +20,15 @@ except Exception:
 
 YELLOW = PatternFill(fill_type="solid", fgColor="FFFF00")
 
+
+def get_secret(name: str) -> str:
+    try:
+        value = st.secrets.get(name, "")
+    except Exception:
+        value = os.getenv(name, "")
+    return str(value or "").strip()
+
+
 BAD_DOMAINS = [
     "avito", "ozon", "wildberries", "youtube", "vk.com", "dzen",
     "instagram", "pinterest", "images", "cart", "login", "compare",
@@ -610,8 +619,8 @@ def process_excel(uploaded_file, category_mode, max_products, use_search, use_ai
     return out
 
 
-st.set_page_config(page_title="GD AutoFill MultiSearch v21", layout="centered")
-st.title("GD AutoFill MultiSearch v21")
+st.set_page_config(page_title="GD AutoFill MultiSearch v21.1", layout="centered")
+st.title("GD AutoFill MultiSearch v21.1")
 st.write("Мультипоиск: Serper/Google + DuckDuckGo + приоритетные сайты. Если капча — берёт другой источник, если данных мало — помогает Gemini.")
 
 gemini_ok = bool(get_secret("GEMINI_API_KEY"))
@@ -654,7 +663,7 @@ if uploaded:
                 st.download_button(
                     "Скачать заполненный Excel",
                     data=result,
-                    file_name=uploaded.name.replace(".xlsx", "_MULTISEARCH_v21.xlsx"),
+                    file_name=uploaded.name.replace(".xlsx", "_MULTISEARCH_v21_1.xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             except Exception as e:
