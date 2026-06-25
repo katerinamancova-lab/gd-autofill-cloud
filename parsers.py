@@ -274,7 +274,7 @@ def extract_with_gemini(
     if not settings.gemini_api_key or not sources:
         return {}
     evidence = "\n\n".join(
-        f"SOURCE: {source.url}\n{source.text[:18_000]}" for source in sources if source.text
+        f"SOURCE: {source.url}\n{source.text[:12_000]}" for source in sources if source.text
     )
     prompt = f"""
 Ты извлекаешь характеристики товара только из предоставленных источников.
@@ -289,9 +289,9 @@ def extract_with_gemini(
 Если подтверждения нет — не добавляй ключ. Не добавляй другие ключи.
 
 ИСТОЧНИКИ:
-{evidence[:80_000]}
+{evidence[:48_000]}
 """.strip()
-    models = [settings.gemini_model]
+    models = [settings.gemini_model, "gemini-2.5-flash-lite"]
     if settings.gemini_model == "gemini-2.0-flash":
         models.insert(0, "gemini-2.5-flash")
     last_error: Exception | None = None
@@ -300,24 +300,51 @@ def extract_with_gemini(
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent"
         )
-        try:
-            response = requests.post(
-                url,
-                params={"key": settings.gemini_api_key},
-                json={
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": 0,
-                        "responseMimeType": "application/json",
+        for attempt in range(3):
+            try:
+                response = requests.post(
+                    url,
+                    headers={"x-goog-api-key": settings.gemini_api_key},
+                    json={
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {
+                            "temperature": 0,
+                            "responseMimeType": "application/json",
+                        },
                     },
-                },
-                timeout=60,
-            )
-            response.raise_for_status()
-            parts = response.json()["candidates"][0]["content"]["parts"]
-            return _extract_json("".join(part.get("text", "") for part in parts))
-        except Exception as exc:
-            last_error = exc
+                    timeout=75,
+                )
+                if response.status_code in {429, 500, 503, 504}:
+                    last_error = RuntimeError(
+                        f"Gemini {model}: временная ошибка HTTP {response.status_code}"
+                    )
+                    if attempt < 2:
+                        time.sleep(2 ** attempt * 2)
+                        continue
+                    break
+                response.raise_for_status()
+                parts = response.json()["candidates"][0]["content"]["parts"]
+                payload = _extract_json(
+                    "".join(part.get("text", "") for part in parts)
+                )
+                if payload:
+                    return payload
+                last_error = RuntimeError(f"Gemini {model}: получен пустой JSON")
+                break
+            except requests.RequestException as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                last_error = RuntimeError(
+                    f"Gemini {model}: ошибка HTTP {status_code or 'сети'}"
+                )
+                if status_code in {429, 500, 503, 504} and attempt < 2:
+                    time.sleep(2 ** attempt * 2)
+                    continue
+                break
+            except Exception as exc:
+                last_error = RuntimeError(
+                    f"Gemini {model}: {type(exc).__name__}"
+                )
+                break
     if last_error:
         raise last_error
     return {}
