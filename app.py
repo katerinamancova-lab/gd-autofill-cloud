@@ -18,6 +18,7 @@ from excel_writer import (
     write_values,
 )
 from parsers import (
+    SourceFetcher,
     extract_locally,
     extract_with_gemini,
     fetch_source,
@@ -45,6 +46,7 @@ def process_file(uploaded_file, test_mode: bool, progress, status):
     workbook, layout = inspect_workbook(uploaded_file.getvalue())
     rows = layout.data_rows[:3] if test_mode else layout.data_rows
     engine = SearchEngine(settings)
+    fetcher = SourceFetcher(settings)
     report_rows, review_rows, source_rows = [], [], []
 
     for position, row in enumerate(rows, start=1):
@@ -59,7 +61,7 @@ def process_file(uploaded_file, test_mode: bool, progress, status):
         for result in results[: settings.max_pages_per_product]:
             if time.monotonic() - started > 115:
                 break
-            parsed.append(fetch_source(result, settings))
+            parsed.append(fetch_source(result, settings, fetcher))
 
         usable = [source for source in parsed if source.status == "открыт"]
         extracted = {}
@@ -104,6 +106,19 @@ def process_file(uploaded_file, test_mode: bool, progress, status):
         if not results:
             review_rows.append(
                 [row, product_name, "Все поля", "Поиск не вернул разрешённых источников", ""]
+            )
+        captcha_urls = [
+            source.url for source in parsed if source.status == "капча — ручная проверка"
+        ]
+        if captcha_urls:
+            review_rows.append(
+                [
+                    row,
+                    product_name,
+                    "Источник",
+                    "CAPTCHA: откройте URL вручную; автоматические запросы к домену остановлены",
+                    " | ".join(captcha_urls),
+                ]
             )
 
         skipped = sum(source.status != "открыт" for source in parsed)
@@ -163,6 +178,11 @@ with st.expander("Подключения и безопасность"):
     st.caption(
         "Без Serper/Bing используется DuckDuckGo. Без Gemini включается более "
         "ограниченный локальный разбор. Домены из blacklist никогда не используются."
+    )
+    st.caption(
+        "Запросы выполняются с паузами и охлаждением каждого домена. Обычные cookies "
+        "сохраняются только внутри текущей обработки. CAPTCHA не обходится: домен "
+        "ставится на паузу, а ссылка попадает в лист «Проверить»."
     )
 
 if "result" not in st.session_state:

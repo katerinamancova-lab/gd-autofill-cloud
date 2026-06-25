@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import io
 import json
+import random
 import re
+import time
 from dataclasses import dataclass, field
 from html import unescape
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -83,32 +86,111 @@ def _html_text(content: bytes) -> tuple[str, str]:
     return title, text
 
 
-def fetch_source(result: SearchResult, settings: Settings) -> ParsedSource:
-    if is_blacklisted(result.url):
-        return ParsedSource(result.url, "blacklist", provider=result.provider)
-    try:
-        response = requests.get(
-            result.url,
-            headers={"User-Agent": settings.user_agent},
-            timeout=settings.page_timeout,
-            allow_redirects=True,
+class SourceFetcher:
+    """Polite per-run HTTP client with normal cookies and domain throttling."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "User-Agent": settings.user_agent,
+                "Accept": "text/html,application/xhtml+xml,application/pdf;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.7",
+            }
         )
-        if is_blacklisted(response.url):
+        self.last_request: dict[str, float] = {}
+        self.blocked_until: dict[str, float] = {}
+
+    @staticmethod
+    def _domain(url: str) -> str:
+        return (urlparse(url).hostname or "").lower().removeprefix("www.")
+
+    def _wait_for_domain(self, domain: str) -> None:
+        now = time.monotonic()
+        blocked_for = self.blocked_until.get(domain, 0.0) - now
+        if blocked_for > 0:
+            raise RuntimeError(
+                f"Домен на охлаждении после CAPTCHA/ограничения: ещё {blocked_for:.0f} сек."
+            )
+
+        random_pause = random.uniform(
+            self.settings.request_delay_min, self.settings.request_delay_max
+        )
+        earliest = self.last_request.get(domain, 0.0) + self.settings.domain_cooldown
+        delay = max(random_pause, earliest - now)
+        if delay > 0:
+            time.sleep(delay)
+
+    def fetch(self, result: SearchResult) -> ParsedSource:
+        if is_blacklisted(result.url):
             return ParsedSource(result.url, "blacklist", provider=result.provider)
-        content_type = response.headers.get("content-type", "").lower()
-        preview = response.text if "text" in content_type or "html" in content_type else ""
-        if _looks_blocked(response.status_code, preview):
-            return ParsedSource(result.url, "капча", provider=result.provider)
-        response.raise_for_status()
-        if "pdf" in content_type or response.url.lower().endswith(".pdf"):
-            title, text = result.title, _pdf_text(response.content)
-        else:
-            title, text = _html_text(response.content)
-        text = text[: settings.max_source_chars]
-        status = "открыт" if len(text) >= settings.min_page_text else "мало текста"
-        return ParsedSource(response.url, status, title, text, result.provider)
-    except Exception as exc:
-        return ParsedSource(result.url, "ошибка", provider=result.provider, error=str(exc)[:300])
+
+        domain = self._domain(result.url)
+        try:
+            self._wait_for_domain(domain)
+        except RuntimeError as exc:
+            return ParsedSource(
+                result.url, "охлаждение", provider=result.provider, error=str(exc)
+            )
+
+        try:
+            response = self.session.get(
+                result.url,
+                timeout=self.settings.page_timeout,
+                allow_redirects=True,
+            )
+            self.last_request[domain] = time.monotonic()
+            if is_blacklisted(response.url):
+                return ParsedSource(result.url, "blacklist", provider=result.provider)
+
+            content_type = response.headers.get("content-type", "").lower()
+            preview = (
+                response.text if "text" in content_type or "html" in content_type else ""
+            )
+            if _looks_blocked(response.status_code, preview):
+                retry_after = response.headers.get("Retry-After", "")
+                try:
+                    cooldown = max(
+                        self.settings.blocked_domain_cooldown, float(retry_after)
+                    )
+                except (TypeError, ValueError):
+                    cooldown = self.settings.blocked_domain_cooldown
+                self.blocked_until[domain] = time.monotonic() + cooldown
+                return ParsedSource(
+                    response.url,
+                    "капча — ручная проверка",
+                    provider=result.provider,
+                    error=(
+                        "Автоматические запросы к домену остановлены. "
+                        f"Охлаждение {cooldown:.0f} сек.; URL можно открыть вручную."
+                    ),
+                )
+
+            response.raise_for_status()
+            if "pdf" in content_type or response.url.lower().endswith(".pdf"):
+                title, text = result.title, _pdf_text(response.content)
+            else:
+                title, text = _html_text(response.content)
+            text = text[: self.settings.max_source_chars]
+            status = (
+                "открыт"
+                if len(text) >= self.settings.min_page_text
+                else "мало текста"
+            )
+            return ParsedSource(response.url, status, title, text, result.provider)
+        except Exception as exc:
+            self.last_request[domain] = time.monotonic()
+            return ParsedSource(
+                result.url, "ошибка", provider=result.provider, error=str(exc)[:300]
+            )
+
+
+def fetch_source(
+    result: SearchResult, settings: Settings, fetcher: SourceFetcher | None = None
+) -> ParsedSource:
+    """Backward-compatible entry point; prefer one SourceFetcher per processing run."""
+    return (fetcher or SourceFetcher(settings)).fetch(result)
 
 
 def _normalize_key(value: str) -> str:

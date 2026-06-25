@@ -42,6 +42,10 @@ class Settings:
     max_pages_per_product: int = 5
     max_source_chars: int = 50_000
     min_page_text: int = 180
+    request_delay_min: float = 2.5
+    request_delay_max: float = 6.0
+    domain_cooldown: float = 12.0
+    blocked_domain_cooldown: float = 300.0
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
