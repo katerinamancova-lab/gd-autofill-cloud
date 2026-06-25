@@ -42,15 +42,35 @@ st.markdown(
 )
 
 
-def process_file(uploaded_file, test_mode: bool, progress, status):
+def process_file(
+    uploaded_file,
+    test_mode: bool,
+    progress,
+    status,
+    *,
+    existing_bytes: bytes | None = None,
+    start_position: int = 0,
+    batch_size: int | None = None,
+    saved_report_rows: list | None = None,
+    saved_review_rows: list | None = None,
+    saved_source_rows: list | None = None,
+):
     settings = load_settings()
-    workbook, layout = inspect_workbook(uploaded_file.getvalue())
-    rows = layout.data_rows[:3] if test_mode else layout.data_rows
+    workbook, layout = inspect_workbook(existing_bytes or uploaded_file.getvalue())
+    all_rows = layout.data_rows[:3] if test_mode else layout.data_rows
+    end_position = (
+        len(all_rows)
+        if batch_size is None
+        else min(len(all_rows), start_position + batch_size)
+    )
+    rows = all_rows[start_position:end_position]
     engine = SearchEngine(settings)
     fetcher = SourceFetcher(settings)
-    report_rows, review_rows, source_rows = [], [], []
+    report_rows = list(saved_report_rows or [])
+    review_rows = list(saved_review_rows or [])
+    source_rows = list(saved_source_rows or [])
 
-    for position, row in enumerate(rows, start=1):
+    for position, row in enumerate(rows, start=start_position + 1):
         started = time.monotonic()
         product_name = str(layout.sheet.cell(row, layout.name_column).value).strip()
         columns = writable_columns(layout, row)
@@ -60,7 +80,7 @@ def process_file(uploaded_file, test_mode: bool, progress, status):
             layout.sheet.title,
             uploaded_file.name,
         )
-        status.write(f"**{position}/{len(rows)}** · {product_name} · {category}")
+        status.write(f"**{position}/{len(all_rows)}** · {product_name} · {category}")
 
         results = engine.search_product(product_name, category)
         parsed = []
@@ -157,10 +177,20 @@ def process_file(uploaded_file, test_mode: bool, progress, status):
                 len(unresolved),
             ]
         )
-        progress.progress(position / len(rows), text=f"Обработано {position} из {len(rows)}")
+        progress.progress(
+            position / len(all_rows),
+            text=f"Обработано {position} из {len(all_rows)}",
+        )
 
     add_report_sheets(workbook, report_rows, review_rows, source_rows)
-    return workbook_bytes(workbook), report_rows
+    return (
+        workbook_bytes(workbook),
+        report_rows,
+        review_rows,
+        source_rows,
+        end_position,
+        len(all_rows),
+    )
 
 
 st.title("GD AutoFill")
@@ -219,26 +249,85 @@ if "result" not in st.session_state:
     st.session_state.result = None
     st.session_state.summary = None
     st.session_state.filename = None
+if "job" not in st.session_state:
+    st.session_state.job = None
 
 if st.button(
     "Заполнить Excel",
     type="primary",
-    disabled=uploaded is None,
+    disabled=uploaded is None or bool(st.session_state.job),
     use_container_width=True,
 ):
-    progress = st.progress(0, text="Подготовка файла…")
+    st.session_state.job = {
+        "original": uploaded.getvalue(),
+        "current": None,
+        "name": uploaded.name,
+        "test_mode": mode.startswith("Тест"),
+        "next": 0,
+        "report_rows": [],
+        "review_rows": [],
+        "source_rows": [],
+    }
+    st.session_state.result = None
+    st.session_state.summary = None
+    st.rerun()
+
+if st.session_state.job:
+    job = st.session_state.job
+    progress = st.progress(0, text="Продолжаю обработку по одному товару…")
     status = st.empty()
+
+    class StoredUpload:
+        name = job["name"]
+
+        def getvalue(self):
+            return job["original"]
+
     try:
-        result, report_rows = process_file(
-            uploaded, mode.startswith("Тест"), progress, status
+        (
+            result,
+            report_rows,
+            review_rows,
+            source_rows,
+            next_position,
+            total,
+        ) = process_file(
+            StoredUpload(),
+            job["test_mode"],
+            progress,
+            status,
+            existing_bytes=job["current"],
+            start_position=job["next"],
+            batch_size=1,
+            saved_report_rows=job["report_rows"],
+            saved_review_rows=job["review_rows"],
+            saved_source_rows=job["source_rows"],
+        )
+        job.update(
+            current=result,
+            next=next_position,
+            report_rows=report_rows,
+            review_rows=review_rows,
+            source_rows=source_rows,
         )
         st.session_state.result = result
         st.session_state.summary = report_rows
-        stem = Path(uploaded.name).stem
-        st.session_state.filename = f"{stem}_filled.xlsx"
-        status.success("Готово. Проверьте сводку и скачайте Excel.")
+        st.session_state.filename = f"{Path(job['name']).stem}_filled.xlsx"
+        if next_position >= total:
+            st.session_state.job = None
+            status.success("Готово. Все товары обработаны.")
+        else:
+            status.info(
+                f"Сохранено {next_position} из {total}. Перехожу к следующему товару…"
+            )
+            time.sleep(0.5)
+            st.rerun()
     except Exception as exc:
-        status.error(f"Не удалось обработать файл: {exc}")
+        st.session_state.job = None
+        status.error(
+            "Обработка остановилась, но уже готовая часть сохранена. "
+            f"Причина: {exc}"
+        )
 
 if st.session_state.result:
     summary = st.session_state.summary or []

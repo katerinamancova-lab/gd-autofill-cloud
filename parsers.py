@@ -114,10 +114,13 @@ class SourceFetcher:
                 f"Домен на охлаждении после CAPTCHA/ограничения: ещё {blocked_for:.0f} сек."
             )
 
+        last_request = self.last_request.get(domain)
+        if last_request is None:
+            return
         random_pause = random.uniform(
             self.settings.request_delay_min, self.settings.request_delay_max
         )
-        earliest = self.last_request.get(domain, 0.0) + self.settings.domain_cooldown
+        earliest = last_request + self.settings.domain_cooldown
         delay = max(random_pause, earliest - now)
         if delay > 0:
             time.sleep(delay)
@@ -304,7 +307,8 @@ def extract_with_gemini(
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent"
         )
-        for attempt in range(3):
+        attempts = 2 if model == settings.gemini_model else 1
+        for attempt in range(attempts):
             try:
                 response = requests.post(
                     url,
@@ -316,13 +320,13 @@ def extract_with_gemini(
                             "responseMimeType": "application/json",
                         },
                     },
-                    timeout=75,
+                    timeout=45,
                 )
                 if response.status_code in {429, 500, 503, 504}:
                     last_error = RuntimeError(
                         f"Gemini {model}: временная ошибка HTTP {response.status_code}"
                     )
-                    if attempt < 2:
+                    if attempt < attempts - 1:
                         time.sleep(2 ** attempt * 2)
                         continue
                     break
@@ -340,7 +344,7 @@ def extract_with_gemini(
                 last_error = RuntimeError(
                     f"Gemini {model}: ошибка HTTP {status_code or 'сети'}"
                 )
-                if status_code in {429, 500, 503, 504} and attempt < 2:
+                if status_code in {429, 500, 503, 504} and attempt < attempts - 1:
                     time.sleep(2 ** attempt * 2)
                     continue
                 break
