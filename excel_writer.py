@@ -25,10 +25,30 @@ class WorkbookLayout:
     headers: list[str]
     name_column: int
     data_rows: list[int]
+    excluded_columns: set[int]
 
 
 def _text(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+EMPTY_MARKERS = {
+    "",
+    "бренд",
+    "заполните в админке",
+    "заполните вручную",
+    "заполните вручную в админке",
+    "нет данных",
+    "не заполнено",
+    "n/a",
+    "-",
+}
+
+
+def is_effectively_empty(value: object) -> bool:
+    if value is None:
+        return True
+    return _text(value).lower() in EMPTY_MARKERS
 
 
 def _name_score(header: str) -> int:
@@ -45,9 +65,20 @@ def _name_score(header: str) -> int:
     return exact.get(normalized, 60 if "наимен" in normalized or "назван" in normalized else 0)
 
 
+def _is_product_placeholder(value: object) -> bool:
+    normalized = _text(value).lower()
+    if not normalized:
+        return False
+    return (
+        "бренд модель" in normalized
+        or normalized in {"наименование товара", "название товара", "модель товара"}
+    )
+
+
 def inspect_workbook(file_bytes: bytes) -> tuple[Any, WorkbookLayout]:
     workbook = load_workbook(io.BytesIO(file_bytes))
     candidates: list[WorkbookLayout] = []
+    empty_template_found = False
     for sheet in workbook.worksheets:
         if sheet.title in REPORT_SHEETS:
             continue
@@ -63,10 +94,32 @@ def inspect_workbook(file_bytes: bytes) -> tuple[Any, WorkbookLayout]:
                 index
                 for index in range(row + 1, sheet.max_row + 1)
                 if _text(sheet.cell(index, name_column).value)
+                and not _is_product_placeholder(sheet.cell(index, name_column).value)
             ]
+            shifted_template = (
+                name_column > 1
+                and "заполнить в админке" in headers[0].lower()
+            )
+            excluded_columns = set(range(1, name_column)) if shifted_template else set()
+            if shifted_template and not data_rows:
+                empty_template_found = True
             if data_rows:
-                candidates.append(WorkbookLayout(sheet, row, headers, name_column, data_rows))
+                candidates.append(
+                    WorkbookLayout(
+                        sheet,
+                        row,
+                        headers,
+                        name_column,
+                        data_rows,
+                        excluded_columns,
+                    )
+                )
     if not candidates:
+        if empty_template_found:
+            raise ValueError(
+                "Это пустой шаблон нового товара. Замените в ячейке B2 текст-пример "
+                "«БРЕНД Модель» на точное название товара и загрузите файл снова."
+            )
         raise ValueError(
             "Не найден лист с колонкой названия товара. Ожидается заголовок вроде "
             "«Наименование товара», «Название» или «Модель»."
@@ -83,28 +136,35 @@ def is_protected(header: str) -> bool:
 def writable_columns(layout: WorkbookLayout, row: int) -> list[str]:
     output = []
     for index, header in enumerate(layout.headers, start=1):
-        if not header or index == layout.name_column or is_protected(header):
+        if (
+            not header
+            or index == layout.name_column
+            or index in layout.excluded_columns
+            or is_protected(header)
+        ):
             continue
-        if layout.sheet.cell(row, index).value in (None, ""):
+        if is_effectively_empty(layout.sheet.cell(row, index).value):
             output.append(header)
     return output
 
 
 def write_values(layout: WorkbookLayout, row: int, values: dict[str, dict[str, str]]) -> int:
-    header_to_column = {
-        header: index for index, header in enumerate(layout.headers, start=1) if header
-    }
+    header_to_columns: dict[str, list[int]] = {}
+    for index, header in enumerate(layout.headers, start=1):
+        if header:
+            header_to_columns.setdefault(header, []).append(index)
     changed = 0
     for header, item in values.items():
-        column = header_to_column.get(header)
-        if not column or is_protected(header):
+        columns = header_to_columns.get(header, [])
+        if not columns or is_protected(header):
             continue
-        cell = layout.sheet.cell(row, column)
-        if cell.value not in (None, ""):
-            continue
-        cell.value = item["value"]
-        cell.fill = YELLOW_FILL
-        changed += 1
+        for column in columns:
+            cell = layout.sheet.cell(row, column)
+            if not is_effectively_empty(cell.value):
+                continue
+            cell.value = item["value"]
+            cell.fill = YELLOW_FILL
+            changed += 1
     return changed
 
 

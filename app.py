@@ -22,6 +22,7 @@ from parsers import (
     extract_locally,
     extract_with_gemini,
     fetch_source,
+    source_matches_product,
     validate_extraction,
 )
 from search_engine import SearchEngine
@@ -53,7 +54,12 @@ def process_file(uploaded_file, test_mode: bool, progress, status):
         started = time.monotonic()
         product_name = str(layout.sheet.cell(row, layout.name_column).value).strip()
         columns = writable_columns(layout, row)
-        category, confidence = detect_category(product_name, layout.headers)
+        category, confidence = detect_category(
+            product_name,
+            layout.headers,
+            layout.sheet.title,
+            uploaded_file.name,
+        )
         status.write(f"**{position}/{len(rows)}** · {product_name} · {category}")
 
         results = engine.search_product(product_name, category)
@@ -63,14 +69,20 @@ def process_file(uploaded_file, test_mode: bool, progress, status):
                 break
             parsed.append(fetch_source(result, settings, fetcher))
 
-        usable = [source for source in parsed if source.status == "открыт"]
+        usable = [
+            source
+            for source in parsed
+            if source.status == "открыт" and source_matches_product(product_name, source)
+        ]
         extracted = {}
+        gemini_error = ""
         if columns and usable:
             try:
                 extracted = extract_with_gemini(
                     product_name, category, columns, usable, settings
                 )
-            except Exception:
+            except Exception as exc:
+                gemini_error = str(exc)[:500]
                 extracted = {}
             if not extracted:
                 extracted = extract_locally(columns, usable)
@@ -106,6 +118,16 @@ def process_file(uploaded_file, test_mode: bool, progress, status):
         if not results:
             review_rows.append(
                 [row, product_name, "Все поля", "Поиск не вернул разрешённых источников", ""]
+            )
+        if gemini_error:
+            review_rows.append(
+                [
+                    row,
+                    product_name,
+                    "Gemini API",
+                    "ИИ-извлечение не выполнилось; использован ограниченный локальный разбор",
+                    gemini_error,
+                ]
             )
         captcha_urls = [
             source.url for source in parsed if source.status == "капча — ручная проверка"
@@ -149,7 +171,10 @@ with left:
     uploaded = st.file_uploader(
         "Загрузите Excel-шаблон GlobalDrive",
         type=["xlsx"],
-        help="Структура исходного листа и заполненные значения сохраняются.",
+        help=(
+            "Поддерживаются массовые выгрузки и формы нового товара. "
+            "В форме нового товара сначала замените пример в B2 точным названием."
+        ),
     )
 with right:
     st.markdown(
@@ -167,6 +192,10 @@ mode = st.radio(
     "Режим обработки",
     ["Тест — первые 3 товара", "Полный файл"],
     horizontal=True,
+)
+st.caption(
+    "Если это пустая форма нового товара, замените в B2 текст-пример "
+    "«БРЕНД Модель» на точное название товара. Служебный столбец A не изменяется."
 )
 
 with st.expander("Подключения и безопасность"):

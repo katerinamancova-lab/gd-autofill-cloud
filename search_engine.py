@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import requests
 
@@ -46,6 +47,38 @@ def build_queries(product_name: str, category: str) -> list[str]:
     if category and category != "Не определена":
         queries.append(f"{product_name} {category} характеристики {suffix}")
     return queries
+
+
+GENERIC_MODEL_WORDS = {
+    "pro",
+    "airdeck",
+    "лодка",
+    "лодки",
+    "пвх",
+    "мотор",
+    "характеристики",
+}
+
+
+def _model_tokens(product_name: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(r"[a-zа-яё0-9]+", product_name.lower())
+        if len(token) >= 2 and token not in GENERIC_MODEL_WORDS
+    ]
+
+
+def relevance_score(product_name: str, result: SearchResult) -> float:
+    """Prefer exact model pages and reject generic/category-only results."""
+    tokens = _model_tokens(product_name)
+    if not tokens:
+        return 1.0
+    haystack = unquote(f"{result.title} {result.snippet} {result.url}").lower()
+    matched = sum(token in haystack for token in tokens)
+    numeric_tokens = [token for token in tokens if any(char.isdigit() for char in token)]
+    if numeric_tokens and not any(token in haystack for token in numeric_tokens):
+        return 0.0
+    return matched / len(tokens)
 
 
 class SearchEngine:
@@ -130,6 +163,8 @@ class SearchEngine:
                 for item in found:
                     clean_url = item.url.split("#", 1)[0]
                     if not clean_url or clean_url in seen or is_blacklisted(clean_url):
+                        continue
+                    if relevance_score(product_name, item) < 0.5:
                         continue
                     seen.add(clean_url)
                     item.url = clean_url

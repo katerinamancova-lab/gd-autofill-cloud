@@ -14,6 +14,8 @@ CATEGORY_RULES: dict[str, tuple[str, ...]] = {
         "bf",
         "f ",
         "df",
+        "mfs",
+        "tohatsu",
     ),
     "Лодки ПВХ": ("лодка пвх", "надувная лодка", "pvc boat"),
     "Квадроциклы": ("квадроцикл", "atv", "квадрик"),
@@ -28,17 +30,55 @@ CATEGORY_RULES: dict[str, tuple[str, ...]] = {
     "Снегоуборщики": ("снегоуборщик", "snow blower", "snowblower"),
     "Мотобуксировщики": ("мотобуксировщик", "мотособака", "motorized towing"),
     "Электромотоциклы": ("электромотоцикл", "электробайк", "electric motorcycle"),
-    "Гольфкары": ("гольфкар", "гольф-кар", "golf cart"),
+    "Гольфкары": (
+        "гольфкар",
+        "гольф-кар",
+        "golf cart",
+        "greencamel",
+        "club car",
+        "ezgo",
+    ),
 }
 
 COLUMN_HINTS: dict[str, tuple[str, ...]] = {
-    "Лодочные моторы": ("мощность, л.с", "дейдвуд", "винт", "тактность"),
-    "Лодки ПВХ": ("плотность пвх", "диаметр баллона", "пассажировместимость"),
+    "Лодочные моторы": (
+        "дейдвуд",
+        "вращение винта",
+        "система подъёма",
+        "тип насадки",
+        "топливная смесь",
+    ),
+    "Лодки ПВХ": (
+        "плотность пвх",
+        "плотность материала",
+        "диаметр баллона",
+        "диаметр борта",
+        "тип днища",
+        "пассажировместимость",
+    ),
     "Квадроциклы": ("тип привода", "колесная база", "лебедка"),
+    "Дорожные мотоциклы": (
+        "наличие птс",
+        "высота по седлу",
+        "тип мотоцикла",
+    ),
+    "Внедорожные мотоциклы": (
+        "карбюратор",
+        "размер колес",
+        "высота по седлу",
+        "тип мотоцикла",
+    ),
     "Снегоходы": ("ширина гусеницы", "длина гусеницы"),
     "Снегоуборщики": ("ширина захвата", "дальность выброса"),
     "Мотобуксировщики": ("модуль-толкач", "ширина гусеницы"),
-    "Гольфкары": ("число мест", "запас хода"),
+    "Гольфкары": (
+        "число мест",
+        "запас хода",
+        "пассажировместимость",
+        "контроллер",
+        "зарядное устройство",
+        "педаль акселератора",
+    ),
 }
 
 
@@ -46,13 +86,29 @@ def _normalize(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
-def detect_category(product_name: str, columns: Iterable[str]) -> tuple[str, float]:
+def detect_category(
+    product_name: str,
+    columns: Iterable[str],
+    sheet_name: str = "",
+    source_name: str = "",
+) -> tuple[str, float]:
     """Return the best category and a transparent heuristic confidence."""
     name = _normalize(product_name)
     normalized_columns = " | ".join(_normalize(column) for column in columns)
+    normalized_sheet = _normalize(sheet_name)
+    normalized_source = _normalize(source_name)
     scores: dict[str, float] = {category: 0.0 for category in CATEGORY_RULES}
 
     for category, keywords in CATEGORY_RULES.items():
+        normalized_category = _normalize(category)
+        if normalized_source.startswith(normalized_category):
+            scores[category] += 10.0
+        elif normalized_category in normalized_source:
+            scores[category] += 6.0
+        if normalized_sheet.startswith(normalized_category):
+            scores[category] += 3.0
+        elif normalized_category in normalized_sheet:
+            scores[category] += 1.5
         for keyword in keywords:
             if keyword in name:
                 scores[category] += 2.0

@@ -198,6 +198,46 @@ def _normalize_key(value: str) -> str:
     return re.sub(r"[^a-zа-я0-9]+", "", value)
 
 
+def _canonical_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    path = re.sub(r"/+$", "", parsed.path or "")
+    return f"{host}{path}".lower()
+
+
+def _normalized_evidence(value: str) -> str:
+    return re.sub(r"\s+", " ", value.lower()).strip()
+
+
+def source_matches_product(product_name: str, source: ParsedSource) -> bool:
+    """Reject pages for a different model before sending them to Gemini."""
+    generic = {
+        "pro",
+        "airdeck",
+        "efi",
+        "лодка",
+        "лодки",
+        "пвх",
+        "мотоцикл",
+        "мотор",
+        "с",
+        "псм",
+        "seats",
+    }
+    tokens = [
+        token
+        for token in re.findall(r"[a-zа-яё0-9]+", product_name.lower())
+        if len(token) >= 2 and token not in generic
+    ]
+    if not tokens:
+        return True
+    haystack = f"{source.title} {source.text[:12_000]}".lower()
+    numeric = [token for token in tokens if any(char.isdigit() for char in token)]
+    if numeric and not any(token in haystack for token in numeric):
+        return False
+    return sum(token in haystack for token in tokens) >= max(1, len(tokens) // 2)
+
+
 def extract_pairs(text: str) -> dict[str, list[str]]:
     """Conservative local extraction from specification-like lines."""
     pairs: dict[str, list[str]] = {}
@@ -251,25 +291,36 @@ def extract_with_gemini(
 ИСТОЧНИКИ:
 {evidence[:80_000]}
 """.strip()
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.gemini_model}:generateContent"
-    )
-    response = requests.post(
-        url,
-        params={"key": settings.gemini_api_key},
-        json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0,
-                "responseMimeType": "application/json",
-            },
-        },
-        timeout=60,
-    )
-    response.raise_for_status()
-    parts = response.json()["candidates"][0]["content"]["parts"]
-    return _extract_json("".join(part.get("text", "") for part in parts))
+    models = [settings.gemini_model]
+    if settings.gemini_model == "gemini-2.0-flash":
+        models.insert(0, "gemini-2.5-flash")
+    last_error: Exception | None = None
+    for model in dict.fromkeys(models):
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent"
+        )
+        try:
+            response = requests.post(
+                url,
+                params={"key": settings.gemini_api_key},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "temperature": 0,
+                        "responseMimeType": "application/json",
+                    },
+                },
+                timeout=60,
+            )
+            response.raise_for_status()
+            parts = response.json()["candidates"][0]["content"]["parts"]
+            return _extract_json("".join(part.get("text", "") for part in parts))
+        except Exception as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    return {}
 
 
 def extract_locally(columns: list[str], sources: list[ParsedSource]) -> dict[str, Any]:
@@ -293,7 +344,9 @@ def validate_extraction(
 ) -> dict[str, dict[str, str]]:
     """Reject unknown keys, unsupported values and blacklisted source URLs."""
     allowed = set(columns)
-    source_text = {source.url: source.text.lower() for source in sources}
+    source_text = {
+        _canonical_url(source.url): _normalized_evidence(source.text) for source in sources
+    }
     valid: dict[str, dict[str, str]] = {}
     for key, raw in extracted.items():
         if key not in allowed:
@@ -304,11 +357,15 @@ def validate_extraction(
         evidence = str(item.get("evidence", "")).strip()
         if not value or not source_url or is_blacklisted(source_url):
             continue
-        text = source_text.get(source_url, "")
+        text = source_text.get(_canonical_url(source_url), "")
         if not text:
             continue
         # Require either exact value or evidence to exist in fetched content.
-        if value.lower() not in text and (not evidence or evidence.lower() not in text):
+        normalized_value = _normalized_evidence(value)
+        normalized_quote = _normalized_evidence(evidence)
+        if normalized_value not in text and (
+            not normalized_quote or normalized_quote not in text
+        ):
             continue
         valid[key] = {"value": value, "source": source_url, "evidence": evidence}
     return valid

@@ -34,7 +34,7 @@ class Settings:
     bing_api_key: str = field(default_factory=lambda: os.getenv("BING_API_KEY", ""))
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     gemini_model: str = field(
-        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     )
     search_timeout: int = 20
     page_timeout: int = 12
