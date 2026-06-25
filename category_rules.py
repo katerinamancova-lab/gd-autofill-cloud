@@ -1,75 +1,70 @@
+"""Automatic product category detection."""
+
+from __future__ import annotations
+
 import re
+from collections.abc import Iterable
 
-CATEGORY_KEYS = {
-    "лодочный мотор": ["дейдвуд", "вращение винта", "тип насадки", "передачи"],
-    "лодка пвх": ["тип днища", "плотность материала", "диаметр борта", "внутренняя длина"],
-    "квадроцикл": ["наличие псм", "лебедка", "тип привода", "защита рук", "фаркоп"],
-    "гольфкар": ["пассажировместимость", "мощность (вт)", "запас хода", "педаль акселератора"],
-    "мотоцикл": ["тип мотоцикла", "наличие птс", "колеса передние", "колеса задние"],
+
+CATEGORY_RULES: dict[str, tuple[str, ...]] = {
+    "Лодочные моторы": (
+        "лодочн",
+        "подвесной мотор",
+        "outboard",
+        "bf",
+        "f ",
+        "df",
+    ),
+    "Лодки ПВХ": ("лодка пвх", "надувная лодка", "pvc boat"),
+    "Квадроциклы": ("квадроцикл", "atv", "квадрик"),
+    "Дорожные мотоциклы": ("дорожный мотоцикл", "street motorcycle"),
+    "Внедорожные мотоциклы": (
+        "эндуро",
+        "кроссовый мотоцикл",
+        "питбайк",
+        "off-road motorcycle",
+    ),
+    "Снегоходы": ("снегоход", "snowmobile"),
+    "Снегоуборщики": ("снегоуборщик", "snow blower", "snowblower"),
+    "Мотобуксировщики": ("мотобуксировщик", "мотособака", "motorized towing"),
+    "Электромотоциклы": ("электромотоцикл", "электробайк", "electric motorcycle"),
+    "Гольфкары": ("гольфкар", "гольф-кар", "golf cart"),
 }
 
-BRAND_DEFAULTS = {
-    "honda": ("Honda", "Япония", "Япония"),
-    "tohatsu": ("Tohatsu", "Япония", "Япония"),
-    "suzuki": ("Suzuki", "Япония", "Япония"),
-    "yamaha": ("Yamaha", "Япония", "Япония"),
-    "mercury": ("Mercury", "США", "Китай"),
-    "hidea": ("Hidea", "Китай", "Китай"),
-    "hdx": ("HDX", "Китай", "Китай"),
-    "parsun": ("Parsun", "Китай", "Китай"),
-    "sea-pro": ("Sea-Pro", "Китай", "Китай"),
-    "bajaj": ("Bajaj", "Индия", "Индия"),
-    "voge": ("VOGE", "Китай", "Китай"),
-    "qjmotor": ("QJMotor", "Китай", "Китай"),
-    "royal enfield": ("Royal Enfield", "Индия", "Индия"),
-    "ktm": ("KTM", "Австрия", "Индия"),
-    "benelli": ("Benelli", "Италия", "Китай"),
-    "stels": ("Stels", "Россия", "Китай"),
-    "linhai": ("Linhai Yamaha", "Китай", "Китай"),
-    "greencamel": ("GreenCamel", "Россия", "Китай"),
-    "sprmotors": ("SPRMOTORS", "Китай", "Китай"),
+COLUMN_HINTS: dict[str, tuple[str, ...]] = {
+    "Лодочные моторы": ("мощность, л.с", "дейдвуд", "винт", "тактность"),
+    "Лодки ПВХ": ("плотность пвх", "диаметр баллона", "пассажировместимость"),
+    "Квадроциклы": ("тип привода", "колесная база", "лебедка"),
+    "Снегоходы": ("ширина гусеницы", "длина гусеницы"),
+    "Снегоуборщики": ("ширина захвата", "дальность выброса"),
+    "Мотобуксировщики": ("модуль-толкач", "ширина гусеницы"),
+    "Гольфкары": ("число мест", "запас хода"),
 }
 
 
-def detect_category(headers, first_names):
-    joined = " ".join(str(h or "").lower() for h in headers)
-    for cat, keys in CATEGORY_KEYS.items():
-        if any(k in joined for k in keys):
-            return cat
-
-    names = " ".join(first_names).lower()
-    if any(x in names for x in ["bf", "mfs", "mercury", "tohatsu", "hidea", "parsun", "sea-pro", "suzuki df"]):
-        return "лодочный мотор"
-    if any(x in names for x in ["пвх", "лодка", "нднд", "airdeck", "байкал", "сапфир"]):
-        return "лодка пвх"
-    if any(x in names for x in ["atv", "outlander", "segway", "linhai", "квадроцикл", "sprmotors", "blade"]):
-        return "квадроцикл"
-    if any(x in names for x in ["greencamel", "гольфкар", "сонора"]):
-        return "гольфкар"
-    return "мотоцикл"
+def _normalize(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
-def base_rules(product_name, category):
-    spec = {}
-    p = product_name.lower()
+def detect_category(product_name: str, columns: Iterable[str]) -> tuple[str, float]:
+    """Return the best category and a transparent heuristic confidence."""
+    name = _normalize(product_name)
+    normalized_columns = " | ".join(_normalize(column) for column in columns)
+    scores: dict[str, float] = {category: 0.0 for category in CATEGORY_RULES}
 
-    for key, (brand, country, made) in BRAND_DEFAULTS.items():
-        if key in p:
-            spec["Бренд [BRAND]"] = brand
-            spec["Страна бренда [BRAND_COUNTRY]"] = country
-            spec["Страна производства [MANUFACTURER]"] = made
-            break
+    for category, keywords in CATEGORY_RULES.items():
+        for keyword in keywords:
+            if keyword in name:
+                scores[category] += 2.0
+        for hint in COLUMN_HINTS.get(category, ()):
+            if hint in normalized_columns:
+                scores[category] += 1.0
 
-    if category == "лодка пвх":
-        m = re.search(r"(\d{3})", p)
-        if m:
-            spec["Длина, см [LENGTH_CM]"] = int(m.group(1))
-        spec.setdefault("Тип лодки [TYPE_BOAT]", "Под мотор")
+    # Common model-prefix hints are intentionally weak.
+    if re.search(r"\b(honda|yamaha|suzuki|mercury|tohatsu)\s+(bf|df|f|mfs)\d+", name):
+        scores["Лодочные моторы"] += 3.0
 
-    spec.setdefault("Гарантия [WARRANTY]", "1 год")
-    spec.setdefault("Гарантия на товар", '<span style="font-family: Acrom; font-size: 13pt;">Гарантия на товар составляет 1 год</span>')
-    spec.setdefault("Скидка", 11)
-    spec.setdefault("Доступное количество", 1000)
-    spec.setdefault("Сортировка", 500)
-
-    return spec
+    category, score = max(scores.items(), key=lambda item: item[1])
+    if score <= 0:
+        return "Не определена", 0.0
+    return category, min(0.98, 0.45 + score * 0.08)

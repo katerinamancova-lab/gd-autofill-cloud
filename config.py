@@ -1,4 +1,12 @@
-BLACKLIST_DOMAINS = [
+"""Configuration for GD AutoFill."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+
+
+BLACKLIST = {
     "globaldrive.ru",
     "more-motorov-spb.ru",
     "spb.menstechnic.ru",
@@ -7,24 +15,51 @@ BLACKLIST_DOMAINS = [
     "moskva.x-tehnika.ru",
     "murmansk.activattor.ru",
     "lodka-motor.com",
-]
-
-BAD_DOMAINS = [
-    "avito", "ozon", "wildberries", "youtube", "vk.com", "dzen",
-    "instagram", "pinterest", "images", "cart", "login", "compare",
-    "forum", "drive2", "market.yandex", "maps.yandex", "translate.yandex",
-    "2gis", "wikipedia"
-]
-
-PRIORITY_DOMAINS = [
-    "honda", "tohatsu", "mercury", "suzuki", "yamaha",
-    "hidea", "parsun", "sea-pro", "brp", "can-am", "segway",
-    "qjmotor", "bajaj", "royalenfield", "ktm", "benelli",
-    "rollingmoto.ru", "motomarine.ru", "vodnik.ru", "mymotors.ru",
-    "hondaset.ru", "rus-lodki.ru", "tulin-lodki.ru", "lodki-piter.ru",
-]
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 Chrome/124 Safari/537.36",
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
+
+PROTECTED_COLUMN_MARKERS = {
+    "uid",
+    "уид",
+    "активность",
+    "розничная цена",
+    "retail price",
+}
+
+REPORT_SHEETS = {"Отчёт", "Проверить", "Источники"}
+
+
+@dataclass(frozen=True)
+class Settings:
+    serper_api_key: str = field(default_factory=lambda: os.getenv("SERPER_API_KEY", ""))
+    bing_api_key: str = field(default_factory=lambda: os.getenv("BING_API_KEY", ""))
+    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    gemini_model: str = field(
+        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    )
+    search_timeout: int = 20
+    page_timeout: int = 12
+    max_results_per_product: int = 8
+    max_pages_per_product: int = 5
+    max_source_chars: int = 50_000
+    min_page_text: int = 180
+    user_agent: str = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+    )
+
+
+def load_settings() -> Settings:
+    """Load settings from environment variables and Streamlit secrets."""
+    values: dict[str, str] = {}
+    try:
+        import streamlit as st
+
+        for key in ("SERPER_API_KEY", "BING_API_KEY", "GEMINI_API_KEY", "GEMINI_MODEL"):
+            if key in st.secrets:
+                values[key] = str(st.secrets[key])
+    except Exception:
+        pass
+
+    for key, value in values.items():
+        os.environ[key] = value
+    return Settings()
