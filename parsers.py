@@ -214,6 +214,10 @@ def source_matches_product(product_name: str, source: ParsedSource) -> bool:
     generic = {
         "pro",
         "airdeck",
+        "фб",
+        "fb",
+        "нднд",
+        "ндвд",
         "efi",
         "лодка",
         "лодки",

@@ -38,8 +38,8 @@ class Settings:
     )
     search_timeout: int = 20
     page_timeout: int = 12
-    max_results_per_product: int = 8
-    max_pages_per_product: int = 5
+    max_results_per_product: int = 12
+    max_pages_per_product: int = 8
     max_source_chars: int = 50_000
     min_page_text: int = 180
     request_delay_min: float = 2.5

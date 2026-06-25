@@ -38,12 +38,24 @@ def exclusion_suffix() -> str:
 def build_queries(product_name: str, category: str) -> list[str]:
     quoted = f'"{product_name.strip()}"'
     suffix = exclusion_suffix()
+    tokens = _model_tokens(product_name)
+    family_name = " ".join(tokens)
+    latin_variant = re.sub(r"\bфб\b", "FB", product_name, flags=re.I)
     queries = [
         f"{quoted} характеристики {suffix}",
         f"{quoted} технические характеристики {suffix}",
         f"{quoted} specs specification {suffix}",
         f"{quoted} паспорт инструкция manual pdf {suffix}",
     ]
+    if latin_variant.lower() != product_name.lower():
+        queries.append(f'"{latin_variant}" характеристики {suffix}')
+    if family_name and family_name.lower() != product_name.lower():
+        queries.extend(
+            [
+                f'"{family_name}" характеристики {suffix}',
+                f"{family_name} specifications manual pdf {suffix}",
+            ]
+        )
     if category and category != "Не определена":
         queries.append(f"{product_name} {category} характеристики {suffix}")
     return queries
@@ -52,6 +64,10 @@ def build_queries(product_name: str, category: str) -> list[str]:
 GENERIC_MODEL_WORDS = {
     "pro",
     "airdeck",
+    "фб",
+    "fb",
+    "нднд",
+    "ндвд",
     "лодка",
     "лодки",
     "пвх",
@@ -78,6 +94,11 @@ def relevance_score(product_name: str, result: SearchResult) -> float:
     numeric_tokens = [token for token in tokens if any(char.isdigit() for char in token)]
     if numeric_tokens and not any(token in haystack for token in numeric_tokens):
         return 0.0
+    text_tokens = [token for token in tokens if token not in numeric_tokens]
+    numeric_match = any(token in haystack for token in numeric_tokens) if numeric_tokens else True
+    text_match = any(token in haystack for token in text_tokens) if text_tokens else True
+    if numeric_match and text_match:
+        return max(0.6, matched / len(tokens))
     return matched / len(tokens)
 
 
@@ -155,6 +176,7 @@ class SearchEngine:
 
         for query in build_queries(product_name, category):
             for provider in providers:
+                accepted_before = len(results)
                 try:
                     found = provider(query)
                 except Exception as exc:
@@ -171,7 +193,7 @@ class SearchEngine:
                     results.append(item)
                     if len(results) >= self.settings.max_results_per_product:
                         return results
-                # A configured API is preferred; DDG remains a fallback.
-                if found:
+                # Fall back when a provider returned links but all were rejected.
+                if len(results) > accepted_before:
                     break
         return results
