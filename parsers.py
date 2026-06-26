@@ -278,6 +278,128 @@ def extract_pairs(text: str) -> dict[str, list[str]]:
     return pairs
 
 
+def _column_aliases(column: str) -> list[str]:
+    label = _display_label(column).lower()
+    code_match = re.search(r"\[([^\]]+)]", column)
+    code = (code_match.group(1).lower() if code_match else "")
+    aliases = [label]
+    if "бренд" in label or code == "brand":
+        aliases += ["марка", "бренд", "brand", "manufacturer"]
+    if "объём двигателя" in label or "объем двигателя" in label or "engine_capacity" in code:
+        aliases += [
+            "объем двигателя",
+            "объём двигателя",
+            "рабочий объем",
+            "рабочий объём",
+            "кубатура",
+            "engine capacity",
+            "engine displacement",
+            "displacement",
+        ]
+    if "мощность" in label or "power" in code:
+        aliases += ["мощность", "максимальная мощность", "power", "max power"]
+    if "охлаждение" in label or "cooling" in code:
+        aliases += ["охлаждение", "система охлаждения", "cooling"]
+    if "двигатель" in label and "объ" not in label:
+        aliases += ["двигатель", "модель двигателя", "engine", "engine type"]
+    if "колёсная база" in label or "колесная база" in label or "wheelbase" in code:
+        aliases += ["колесная база", "колёсная база", "wheelbase"]
+    if "вес" in label or "weight" in code:
+        aliases += ["вес", "масса", "сухая масса", "снаряженная масса", "weight"]
+    if "клиренс" in label or "clearance" in code:
+        aliases += ["клиренс", "дорожный просвет", "clearance", "ground clearance"]
+    if "топлив" in label and "тип" not in label:
+        aliases += ["система питания", "подача топлива", "топливная система", "fuel system", "fuel supply"]
+    if "трансмис" in label:
+        aliases += ["трансмиссия", "коробка передач", "кпп", "transmission"]
+    if "запуск" in label or "starting" in code:
+        aliases += ["система запуска", "запуск", "стартер", "starting system"]
+    if "страна бренда" in label:
+        aliases += ["страна бренда", "страна марки", "brand country"]
+    if "страна производства" in label or "manufacturer" in code:
+        aliases += ["страна производства", "производство", "made in", "manufacturer country"]
+    if "материал рамы" in label:
+        aliases += ["рама", "материал рамы", "frame", "frame material"]
+    if "тип топлива" in label:
+        aliases += ["тип топлива", "топливо", "fuel type"]
+    if "количество тактов" in label or "stroke" in code:
+        aliases += ["количество тактов", "тактов", "тактность", "stroke"]
+    if "тип двигателя" in label:
+        aliases += ["тип двигателя", "двигатель", "engine type"]
+    if "объём бака" in label or "объем бака" in label or "fuel_capacity" in code:
+        aliases += ["объем бака", "объём бака", "топливный бак", "бак", "fuel tank", "fuel capacity"]
+    if "цилиндр" in label:
+        aliases += ["количество цилиндров", "цилиндров", "cylinders"]
+    if "подвеска передняя" in label:
+        aliases += ["передняя подвеска", "подвеска передняя", "front suspension"]
+    if "подвеска задняя" in label:
+        aliases += ["задняя подвеска", "подвеска задняя", "rear suspension"]
+    if "тормоза передние" in label:
+        aliases += ["передние тормоза", "тормоз передний", "front brake", "front brakes"]
+    if "тормоза задние" in label:
+        aliases += ["задние тормоза", "тормоз задний", "rear brake", "rear brakes"]
+    if label.startswith("длина"):
+        aliases += ["длина", "length"]
+    if label.startswith("ширина"):
+        aliases += ["ширина", "width"]
+    if label.startswith("высота") and "седл" not in label:
+        aliases += ["высота", "height"]
+    if "высота по седлу" in label or "seat_height" in code:
+        aliases += ["высота по седлу", "высота сиденья", "seat height"]
+    if "скорость" in label:
+        aliases += ["максимальная скорость", "макс. скорость", "max speed", "maximum speed"]
+    if "колеса передние" in label or "колёса передние" in label:
+        aliases += ["переднее колесо", "передние колеса", "передние колёса", "front wheel", "front tire"]
+    if "колеса задние" in label or "колёса задние" in label:
+        aliases += ["заднее колесо", "задние колеса", "задние колёса", "rear wheel", "rear tire"]
+    return list(dict.fromkeys(_normalize_key(alias) for alias in aliases if alias))
+
+
+def _line_regex_value(source: ParsedSource, aliases: list[str]) -> str:
+    for raw_line in source.text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line.strip(" |•\t"))
+        if not 4 <= len(line) <= 240:
+            continue
+        normalized_line = _normalize_key(line)
+        if not any(alias and alias in normalized_line for alias in aliases):
+            continue
+        match = re.search(r"(?:[:|–—-]\s*|\s{2,})([^:|]{1,120})$", line)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _regex_value(column: str, source: ParsedSource) -> str:
+    text = re.sub(r"\s+", " ", source.text)
+    label = _display_label(column).lower()
+    patterns: list[str] = []
+    if "объём двигателя" in label or "объем двигателя" in label:
+        patterns = [r"(?:об[ъь]е[мё]\s+двигателя|рабочий\s+об[ъь]е[мё]|displacement)[^\d]{0,40}(\d{2,4}(?:[,.]\d+)?)"]
+    elif "мощность" in label:
+        patterns = [r"(?:мощность|max(?:imum)?\s+power|power)[^\d]{0,40}(\d{1,3}(?:[,.]\d+)?)"]
+    elif "колёсная база" in label or "колесная база" in label:
+        patterns = [r"(?:кол[её]сная\s+база|wheelbase)[^\d]{0,40}(\d{3,4})"]
+    elif "вес" in label:
+        patterns = [r"(?:сухая\s+масса|снаряженная\s+масса|масса|вес|weight)[^\d]{0,40}(\d{2,4}(?:[,.]\d+)?)"]
+    elif "клиренс" in label:
+        patterns = [r"(?:клиренс|дорожный\s+просвет|clearance)[^\d]{0,40}(\d{2,4})"]
+    elif "объём бака" in label or "объем бака" in label:
+        patterns = [r"(?:об[ъь]е[мё]\s+бака|топливный\s+бак|fuel\s+(?:tank|capacity))[^\d]{0,40}(\d{1,2}(?:[,.]\d+)?)"]
+    elif "количество цилиндров" in label:
+        patterns = [r"(?:цилиндров|cylinders)[^\d]{0,40}(\d{1,2})"]
+    elif "количество тактов" in label:
+        patterns = [r"(?:тактов|тактный|stroke)[^\d]{0,40}(\d)"]
+    elif "высота по седлу" in label:
+        patterns = [r"(?:высота\s+(?:по\s+)?седл[ау]|seat\s+height)[^\d]{0,40}(\d{3,4})"]
+    elif "скорость" in label:
+        patterns = [r"(?:макс(?:имальная)?\.?\s+скорость|max(?:imum)?\s+speed)[^\d]{0,40}(\d{2,3})"]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return match.group(1)
+    return ""
+
+
 def _extract_json(text: str) -> dict[str, Any]:
     text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
     start, end = text.find("{"), text.rfind("}")
@@ -451,16 +573,38 @@ def extract_with_gemini(
     return {}
 
 
-def extract_locally(columns: list[str], sources: list[ParsedSource]) -> dict[str, Any]:
+def extract_locally(
+    columns: list[str], sources: list[ParsedSource], product_name: str = ""
+) -> dict[str, Any]:
     per_source = [(source, extract_pairs(source.text)) for source in sources]
     output: dict[str, Any] = {}
     for column in columns:
         normalized = _normalize_key(column)
+        aliases = _column_aliases(column)
+        label = _display_label(column).lower()
         candidates: list[tuple[str, str]] = []
+
+        if ("бренд" in label or "[BRAND]" in column.upper()) and product_name:
+            brand = re.split(r"\s+", product_name.strip())[0]
+            if brand and any(brand.lower() in f"{source.title} {source.text[:4000]}".lower() for source in sources):
+                output[column] = {
+                    "value": brand,
+                    "evidence": product_name,
+                    "source": sources[0].url if sources else "manual://product-name",
+                }
+                continue
+
         for source, pairs in per_source:
             for key, values in pairs.items():
                 if normalized and (normalized in key or key in normalized):
                     candidates.extend((value, source.url) for value in values)
+                    continue
+                if any(alias and (alias in key or key in alias) for alias in aliases):
+                    candidates.extend((value, source.url) for value in values)
+            if not candidates:
+                value = _line_regex_value(source, aliases) or _regex_value(column, source)
+                if value:
+                    candidates.append((value, source.url))
         if candidates:
             value, url = candidates[0]
             output[column] = {"value": value, "evidence": value, "source": url}

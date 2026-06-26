@@ -319,7 +319,7 @@ def process_file(
                 _log(product_name, "gemini error", gemini_error)
                 extracted = {}
             if not extracted:
-                extracted = extract_locally(columns, usable)
+                extracted = extract_locally(columns, usable, product_name)
 
         status.write(
             f"**{position}/{len(all_rows)} товаров**\n\n"
@@ -540,7 +540,7 @@ if "debug_rows" not in st.session_state:
 
 
 
-BATCH_SIZE_FULL = 1
+BATCH_SIZE_FULL = 3
 BATCH_SIZE_TEST = 3
 AUTO_CONTINUE_DELAY_SECONDS = 1.5
 
