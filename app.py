@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import time
 import re
+import json
+import hashlib
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -32,6 +35,8 @@ from parsers import (
 from search_engine import SearchEngine
 
 OPEN_STATUSES = {"открыт", "РѕС‚РєСЂС‹С‚"}
+CACHE_PATH = Path("gd_autofill_cache.json")
+LOG_PATH = Path("logs.txt")
 
 
 def _canonical_url(url: str) -> str:
@@ -39,6 +44,41 @@ def _canonical_url(url: str) -> str:
     host = (parsed.hostname or "").lower().removeprefix("www.")
     path = re.sub(r"/+$", "", parsed.path or "")
     return f"{host}{path}".lower()
+
+
+def _log(product_name: str, stage: str, message: str = "", source: str = "") -> None:
+    line = (
+        f"{datetime.now().isoformat(timespec='seconds')}\t"
+        f"{product_name}\t{stage}\t{source}\t{message}\n"
+    )
+    try:
+        with LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+    except Exception:
+        pass
+
+
+def _load_cache() -> dict:
+    try:
+        return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_cache(cache: dict) -> None:
+    try:
+        CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _cache_key(product_name: str, category: str, columns: list[str]) -> str:
+    payload = json.dumps(
+        {"product": product_name.strip().lower(), "category": category, "columns": columns},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 st.set_page_config(page_title="GD AutoFill", page_icon="⚙️", layout="wide")
 
@@ -124,7 +164,9 @@ def process_file(
     saved_report_rows: list | None = None,
     saved_review_rows: list | None = None,
     saved_source_rows: list | None = None,
+    saved_error_rows: list | None = None,
     manual_sources_text: str = "",
+    debug_mode: bool = False,
 ):
     settings = load_settings()
     workbook, layout = inspect_workbook(existing_bytes or uploaded_file.getvalue())
@@ -141,6 +183,9 @@ def process_file(
     report_rows = list(saved_report_rows or [])
     review_rows = list(saved_review_rows or [])
     source_rows = list(saved_source_rows or [])
+    error_rows = list(saved_error_rows or [])
+    debug_rows: list[dict] = []
+    cache = _load_cache()
 
     for position, row in enumerate(rows, start=start_position + 1):
         started = time.monotonic()
@@ -152,9 +197,61 @@ def process_file(
             layout.sheet.title,
             uploaded_file.name,
         )
-        status.write(f"**{position}/{len(all_rows)}** · {product_name} · {category}")
+        status.write(
+            f"**{position}/{len(all_rows)} товаров**\n\n"
+            f"Текущий товар: **{product_name}**\n\n"
+            f"Этап: ищу характеристики"
+        )
+        _log(product_name, "start", f"row={row}; category={category}")
 
-        results = engine.search_product(product_name, category)
+        cache_key = _cache_key(product_name, category, columns)
+        cached_values = cache.get(cache_key, {}).get("values") if columns else None
+        if cached_values:
+            changed = write_values(layout, row, cached_values)
+            unresolved = [column for column in columns if column not in cached_values]
+            report_rows.append(
+                [
+                    row,
+                    product_name,
+                    category,
+                    f"{confidence:.0%}",
+                    changed,
+                    0,
+                    0,
+                    0,
+                    len(cached_values),
+                    changed,
+                    0,
+                    len(unresolved),
+                ]
+            )
+            source_rows.append(
+                [
+                    row,
+                    product_name,
+                    "cache://local",
+                    "Локальный кэш",
+                    "из кэша",
+                    0,
+                    len(cached_values),
+                    "да" if changed else "нет",
+                    "",
+                ]
+            )
+            _log(product_name, "cache", f"fields={len(cached_values)}; written={changed}")
+            progress.progress(position / len(all_rows), text=f"Обработано {position} из {len(all_rows)}")
+            continue
+
+        try:
+            results = engine.search_product(product_name, category)
+        except Exception as exc:
+            results = []
+            message = str(exc)[:500]
+            error_rows.append(
+                [row, product_name, "поиск источников", message, "", "Проверьте ключи поиска или повторите позже"]
+            )
+            review_rows.append([row, product_name, "Все поля", "Ошибка поиска источников", message])
+            _log(product_name, "search error", message)
         parsed: list[ParsedSource] = []
         snippet_sources = _snippet_sources(product_name, results)
         manual_source = _manual_source_for_product(product_name, manual_sources_text)
@@ -165,6 +262,11 @@ def process_file(
             for result in firecrawl_candidates:
                 if time.monotonic() - started > settings.product_time_budget:
                     break
+                status.write(
+                    f"**{position}/{len(all_rows)} товаров**\n\n"
+                    f"Текущий товар: **{product_name}**\n\n"
+                    f"Этап: читаю источник через Firecrawl"
+                )
                 parsed.append(firecrawl.scrape(result))
             firecrawl_opened = [
                 source
@@ -199,6 +301,11 @@ def process_file(
         gemini_extracted_count = 0
         gemini_error = ""
         if columns and usable:
+            status.write(
+                f"**{position}/{len(all_rows)} товаров**\n\n"
+                f"Текущий товар: **{product_name}**\n\n"
+                f"Этап: извлекаю характеристики"
+            )
             try:
                 extracted = extract_with_gemini(
                     product_name, category, columns, usable, settings
@@ -206,12 +313,42 @@ def process_file(
                 gemini_extracted_count = len(extracted)
             except Exception as exc:
                 gemini_error = str(exc)[:500]
+                error_rows.append(
+                    [row, product_name, "Gemini", gemini_error, "", "Использован локальный разбор как fallback"]
+                )
+                _log(product_name, "gemini error", gemini_error)
                 extracted = {}
             if not extracted:
                 extracted = extract_locally(columns, usable)
 
+        status.write(
+            f"**{position}/{len(all_rows)} товаров**\n\n"
+            f"Текущий товар: **{product_name}**\n\n"
+            f"Этап: записываю Excel"
+        )
         values = validate_extraction(extracted, columns, usable)
         changed = write_values(layout, row, values)
+        if values:
+            cache[cache_key] = {
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+                "product_name": product_name,
+                "category": category,
+                "values": values,
+            }
+            _save_cache(cache)
+        _log(product_name, "write", f"extracted={len(extracted)}; valid={len(values)}; written={changed}")
+        if debug_mode:
+            debug_rows.append(
+                {
+                    "product": product_name,
+                    "urls": [result.url for result in results],
+                    "usable_sources": [source.url for source in usable],
+                    "extracted": extracted,
+                    "written": values,
+                    "unfilled": [column for column in columns if column not in values],
+                    "errors": gemini_error,
+                }
+            )
         used_urls = {_canonical_url(item["source"]) for item in values.values()}
         for source in parsed_for_report:
             source.used = _canonical_url(source.url) in used_urls
@@ -228,6 +365,17 @@ def process_file(
                     source.error,
                 ]
             )
+            if source.error:
+                error_rows.append(
+                    [
+                        row,
+                        product_name,
+                        "чтение источника",
+                        source.error,
+                        source.url,
+                        "Источник пропущен, обработка продолжена по другим URL",
+                    ]
+                )
 
         unresolved = [column for column in columns if column not in values]
         for column in unresolved:
@@ -296,12 +444,14 @@ def process_file(
             text=f"Обработано {position} из {len(all_rows)}",
         )
 
-    add_report_sheets(workbook, report_rows, review_rows, source_rows)
+    add_report_sheets(workbook, report_rows, review_rows, source_rows, error_rows)
     return (
         workbook_bytes(workbook),
         report_rows,
         review_rows,
         source_rows,
+        error_rows,
+        debug_rows,
         end_position,
         len(all_rows),
     )
@@ -377,16 +527,20 @@ manual_sources_text = st.text_area(
     ),
 )
 
+debug_mode = st.toggle("Режим отладки", value=False)
+
 if "result" not in st.session_state:
     st.session_state.result = None
     st.session_state.summary = None
     st.session_state.filename = None
 if "job" not in st.session_state:
     st.session_state.job = None
+if "debug_rows" not in st.session_state:
+    st.session_state.debug_rows = []
 
 
 
-BATCH_SIZE_FULL = 5
+BATCH_SIZE_FULL = 1
 BATCH_SIZE_TEST = 3
 AUTO_CONTINUE_DELAY_SECONDS = 1.5
 
@@ -414,6 +568,8 @@ if start_clicked:
         "report_rows": [],
         "review_rows": [],
         "source_rows": [],
+        "error_rows": [],
+        "debug_mode": debug_mode,
     }
     st.session_state.result = None
     st.session_state.summary = None
@@ -472,6 +628,8 @@ if st.session_state.job and should_process:
             report_rows,
             review_rows,
             source_rows,
+            error_rows,
+            debug_rows,
             next_position,
             total,
         ) = process_file(
@@ -485,7 +643,9 @@ if st.session_state.job and should_process:
             saved_report_rows=job["report_rows"],
             saved_review_rows=job["review_rows"],
             saved_source_rows=job["source_rows"],
+            saved_error_rows=job["error_rows"],
             manual_sources_text=job.get("manual_sources_text", ""),
+            debug_mode=job.get("debug_mode", False),
         )
         job.update(
             current=result,
@@ -494,7 +654,9 @@ if st.session_state.job and should_process:
             report_rows=report_rows,
             review_rows=review_rows,
             source_rows=source_rows,
+            error_rows=error_rows,
         )
+        st.session_state.debug_rows.extend(debug_rows)
         st.session_state.result = result
         st.session_state.summary = report_rows
         st.session_state.filename = f"{Path(job['name']).stem}_filled.xlsx"
@@ -511,6 +673,10 @@ if st.session_state.job and should_process:
                 st.rerun()
     except Exception as exc:
         job["auto_continue"] = False
+        if job.get("current"):
+            st.session_state.result = job["current"]
+            st.session_state.summary = job.get("report_rows", [])
+            st.session_state.filename = f"{Path(job['name']).stem}_partial.xlsx"
         status.error(
             "Обработка остановилась, но уже готовая часть сохранена. "
             f"Причина: {exc}. Можно скачать готовую часть или нажать ?Продолжить?."
@@ -538,3 +704,17 @@ if st.session_state.result:
         type="primary",
         use_container_width=True,
     )
+    if LOG_PATH.exists():
+        st.download_button(
+            "Скачать logs.txt",
+            data=LOG_PATH.read_text(encoding="utf-8"),
+            file_name="logs.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+
+if debug_mode and st.session_state.debug_rows:
+    with st.expander("Отладка последней обработки", expanded=False):
+        for item in st.session_state.debug_rows[-10:]:
+            st.write(f"**{item['product']}**")
+            st.json(item)

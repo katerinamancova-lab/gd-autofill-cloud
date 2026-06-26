@@ -215,6 +215,7 @@ def add_report_sheets(
     report_rows: list[list[Any]],
     review_rows: list[list[Any]],
     source_rows: list[list[Any]],
+    error_rows: list[list[Any]] | None = None,
 ) -> None:
     report = _replace_sheet(workbook, "Отчёт")
     _write_table(
@@ -256,6 +257,12 @@ def add_report_sheets(
             "Ошибка",
         ],
         source_rows,
+    )
+    errors = _replace_sheet(workbook, "Ошибки")
+    _write_table(
+        errors,
+        ["Строка товара", "Название товара", "Этап", "Ошибка", "URL", "Рекомендация"],
+        error_rows or [],
     )
 
 

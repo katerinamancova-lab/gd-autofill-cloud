@@ -29,6 +29,7 @@ REPORT_SHEETS = {
     "Отчёт",
     "Проверить",
     "Источники",
+    "Ошибки",
     # Backward compatibility with older builds that had mojibake sheet names.
     "РћС‚С‡С‘С‚",
     "РџСЂРѕРІРµСЂРёС‚СЊ",
@@ -45,11 +46,11 @@ class Settings:
     gemini_model: str = field(
         default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     )
-    search_timeout: int = 30
-    page_timeout: int = 20
+    search_timeout: int = 20
+    page_timeout: int = 15
     max_results_per_product: int = 40
     max_pages_per_product: int = 8
-    max_firecrawl_urls_per_product: int = 8
+    max_firecrawl_urls_per_product: int = 5
     firecrawl_timeout: int = 45
     max_source_chars: int = 100_000
     max_gemini_source_chars: int = 100_000
@@ -59,7 +60,7 @@ class Settings:
     request_delay_max: float = 8.0
     domain_cooldown: float = 20.0
     blocked_domain_cooldown: float = 900.0
-    product_time_budget: int = 180
+    product_time_budget: int = 90
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
