@@ -52,6 +52,8 @@ class Settings:
     max_firecrawl_urls_per_product: int = 8
     firecrawl_timeout: int = 45
     max_source_chars: int = 100_000
+    max_gemini_source_chars: int = 100_000
+    max_gemini_total_chars: int = 220_000
     min_page_text: int = 180
     request_delay_min: float = 3.0
     request_delay_max: float = 8.0

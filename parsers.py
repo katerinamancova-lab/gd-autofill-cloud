@@ -212,6 +212,17 @@ def _normalized_evidence(value: str) -> str:
     return re.sub(r"\s+", " ", value.lower()).strip()
 
 
+def _column_key_map(columns: list[str]) -> dict[str, str]:
+    """Map exact Excel headers and their visible labels back to exact headers."""
+    mapping: dict[str, str] = {}
+    for column in columns:
+        mapping[column] = column
+        mapping[_display_label(column)] = column
+        mapping[_normalize_key(column)] = column
+        mapping[_normalize_key(_display_label(column))] = column
+    return {key: value for key, value in mapping.items() if key}
+
+
 def source_matches_product(product_name: str, source: ParsedSource) -> bool:
     """Reject pages for a different model before sending them to Gemini."""
     generic = {
@@ -339,7 +350,9 @@ def extract_with_gemini(
     if not settings.gemini_api_key or not sources:
         return {}
     evidence = "\n\n".join(
-        f"SOURCE: {source.url}\n{source.text[:16_000]}" for source in sources if source.text
+        f"SOURCE: {source.url}\n{source.text[:settings.max_gemini_source_chars]}"
+        for source in sources
+        if source.text
     )
     prompt = f"""
 Ты извлекаешь характеристики товара только из предоставленных источников.
@@ -363,7 +376,7 @@ def extract_with_gemini(
 Если подтверждения нет — не добавляй ключ. Не добавляй другие ключи.
 
 ИСТОЧНИКИ:
-{evidence[:60_000]}
+{evidence[:settings.max_gemini_total_chars]}
 """.strip()
     models = [settings.gemini_model, "gemini-2.5-flash-lite"]
     if settings.gemini_model == "gemini-2.0-flash":
@@ -562,15 +575,15 @@ def validate_extraction(
     extracted: dict[str, Any], columns: list[str], sources: list[ParsedSource]
 ) -> dict[str, dict[str, str]]:
     """Reject unknown keys, unsupported values and blacklisted source URLs."""
-    allowed = set(columns)
+    key_map = _column_key_map(columns)
     source_text = {
         _canonical_url(source.url): _normalized_evidence(source.text) for source in sources
     }
-    all_text = " ".join(source_text.values())
     known_urls = {_canonical_url(source.url): source.url for source in sources}
     valid: dict[str, dict[str, str]] = {}
     for key, raw in extracted.items():
-        if key not in allowed:
+        column = key_map.get(str(key).strip()) or key_map.get(_normalize_key(str(key)))
+        if not column:
             continue
         item = raw if isinstance(raw, dict) else {"value": str(raw)}
         value = str(item.get("value", "")).strip()
@@ -582,21 +595,29 @@ def validate_extraction(
             source_url = sources[0].url
         if not source_url or is_blacklisted(source_url):
             continue
-        value = _sanitize_value_for_column(key, value, evidence)
+        value = _sanitize_value_for_column(column, value, evidence)
         if not value:
             continue
         canonical = _canonical_url(source_url)
         text = source_text.get(canonical, "")
-        if not text and canonical not in known_urls:
-            # Gemini sometimes returns a canonical/redirect URL not byte-identical
-            # to the search result. If the value or evidence exists anywhere in
-            # the fetched Firecrawl text, keep it.
-            text = all_text
-        if not text:
-            continue
         normalized_value = _normalized_evidence(value)
         normalized_quote = _normalized_evidence(evidence)
-        if not normalized_quote and normalized_value not in text:
+
+        if not text:
+            # Gemini sometimes returns a canonical/redirect URL not byte-identical
+            # to the search result. Find the fetched source that contains the
+            # quoted evidence or the normalized value and attribute the fill to it.
+            for source in sources:
+                candidate_text = source_text.get(_canonical_url(source.url), "")
+                if (
+                    normalized_quote
+                    and normalized_quote in candidate_text
+                    or normalized_value in candidate_text
+                ):
+                    text = candidate_text
+                    source_url = source.url
+                    break
+        if not text or (normalized_quote not in text and normalized_value not in text):
             continue
-        valid[key] = {"value": value, "source": source_url, "evidence": evidence}
+        valid[column] = {"value": value, "source": source_url, "evidence": evidence}
     return valid

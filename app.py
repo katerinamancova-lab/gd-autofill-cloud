@@ -203,9 +203,7 @@ def process_file(
                 extracted = extract_with_gemini(
                     product_name, category, columns, usable, settings
                 )
-                gemini_extracted_count = len(
-                    [key for key in extracted if key in set(columns)]
-                )
+                gemini_extracted_count = len(extracted)
             except Exception as exc:
                 gemini_error = str(exc)[:500]
                 extracted = {}
@@ -521,7 +519,7 @@ if st.session_state.job and should_process:
 if st.session_state.result:
     summary = st.session_state.summary or []
     total_filled = sum(row[4] for row in summary)
-    total_review = sum(row[8] for row in summary)
+    total_review = sum(row[11] for row in summary)
     categories = Counter(row[2] for row in summary)
     c1, c2, c3 = st.columns(3)
     c1.metric("Товаров обработано", len(summary))
