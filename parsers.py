@@ -349,12 +349,15 @@ def extract_with_gemini(
 ) -> dict[str, Any]:
     if not settings.gemini_api_key or not sources:
         return {}
-    evidence = "\n\n".join(
-        f"SOURCE: {source.url}\n{source.text[:settings.max_gemini_source_chars]}"
-        for source in sources
-        if source.text
-    )
-    prompt = f"""
+    column_guide = json.dumps(_column_guide(columns), ensure_ascii=False)
+
+    def build_prompt(source_limit: int, total_limit: int) -> str:
+        evidence = "\n\n".join(
+            f"SOURCE: {source.url}\n{source.text[:source_limit]}"
+            for source in sources
+            if source.text
+        )
+        return f"""
 Ты извлекаешь характеристики товара только из предоставленных источников.
 Не используй знания из памяти и не делай предположений.
 Если значение найдено хотя бы в одном нормальном источнике и относится к этому товару — верни его.
@@ -369,15 +372,20 @@ def extract_with_gemini(
 Товар: {product_name}
 Категория: {category}
 Столбцы для заполнения:
-{json.dumps(_column_guide(columns), ensure_ascii=False)}
+{column_guide}
 
 Верни только JSON-объект. Значение каждого ключа должно иметь вид:
 {{"value": "значение", "evidence": "короткая цитата/фрагмент", "source": "URL"}}
 Если подтверждения нет — не добавляй ключ. Не добавляй другие ключи.
 
 ИСТОЧНИКИ:
-{evidence[:settings.max_gemini_total_chars]}
+{evidence[:total_limit]}
 """.strip()
+
+    prompt_variants = [
+        build_prompt(settings.max_gemini_source_chars, settings.max_gemini_total_chars),
+        build_prompt(12_000, 35_000),
+    ]
     models = [settings.gemini_model, "gemini-2.5-flash-lite"]
     if settings.gemini_model == "gemini-2.0-flash":
         models.insert(0, "gemini-2.5-flash")
@@ -387,51 +395,56 @@ def extract_with_gemini(
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent"
         )
-        attempts = 3 if model == settings.gemini_model else 2
-        for attempt in range(attempts):
-            try:
-                response = requests.post(
-                    url,
-                    headers={"x-goog-api-key": settings.gemini_api_key},
-                    json={
-                        "contents": [{"parts": [{"text": prompt}]}],
-                        "generationConfig": {
-                            "temperature": 0,
-                            "responseMimeType": "application/json",
+        attempts = 2 if model == settings.gemini_model else 1
+        for prompt_index, prompt in enumerate(prompt_variants):
+            if prompt_index > 0:
+                time.sleep(1)
+            for attempt in range(attempts):
+                try:
+                    response = requests.post(
+                        url,
+                        headers={"x-goog-api-key": settings.gemini_api_key},
+                        json={
+                            "contents": [{"parts": [{"text": prompt}]}],
+                            "generationConfig": {
+                                "temperature": 0,
+                                "responseMimeType": "application/json",
+                            },
                         },
-                    },
-                    timeout=60,
-                )
-                if response.status_code in {429, 500, 503, 504}:
-                    last_error = RuntimeError(
-                        f"Gemini {model}: временная ошибка HTTP {response.status_code}"
+                        timeout=45,
                     )
-                    if attempt < attempts - 1:
+                    if response.status_code in {429, 500, 503, 504}:
+                        last_error = RuntimeError(
+                            f"Gemini {model}: временная ошибка HTTP {response.status_code}"
+                        )
+                        if attempt < attempts - 1:
+                            time.sleep(2 ** attempt * 2)
+                            continue
+                        break
+                    response.raise_for_status()
+                    parts = response.json()["candidates"][0]["content"]["parts"]
+                    payload = _extract_json(
+                        "".join(part.get("text", "") for part in parts)
+                    )
+                    if payload:
+                        return payload
+                    last_error = RuntimeError(f"Gemini {model}: получен пустой JSON")
+                    break
+                except requests.RequestException as exc:
+                    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                    last_error = RuntimeError(
+                        f"Gemini {model}: ошибка HTTP {status_code or 'сети'}"
+                    )
+                    if status_code in {429, 500, 503, 504} and attempt < attempts - 1:
                         time.sleep(2 ** attempt * 2)
                         continue
                     break
-                response.raise_for_status()
-                parts = response.json()["candidates"][0]["content"]["parts"]
-                payload = _extract_json(
-                    "".join(part.get("text", "") for part in parts)
-                )
-                if payload:
-                    return payload
-                last_error = RuntimeError(f"Gemini {model}: получен пустой JSON")
-                break
-            except requests.RequestException as exc:
-                status_code = getattr(getattr(exc, "response", None), "status_code", None)
-                last_error = RuntimeError(
-                    f"Gemini {model}: ошибка HTTP {status_code or 'сети'}"
-                )
-                if status_code in {429, 500, 503, 504} and attempt < attempts - 1:
-                    time.sleep(2 ** attempt * 2)
-                    continue
-                break
-            except Exception as exc:
-                last_error = RuntimeError(
-                    f"Gemini {model}: {type(exc).__name__}"
-                )
+                except Exception as exc:
+                    last_error = RuntimeError(
+                        f"Gemini {model}: {type(exc).__name__}"
+                    )
+                    break
+            if not last_error or "HTTP 429" not in str(last_error):
                 break
     if last_error:
         raise last_error
