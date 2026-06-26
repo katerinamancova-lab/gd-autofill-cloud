@@ -38,15 +38,15 @@ class Settings:
     )
     search_timeout: int = 30
     page_timeout: int = 20
-    max_results_per_product: int = 20
-    max_pages_per_product: int = 14
+    max_results_per_product: int = 40
+    max_pages_per_product: int = 8
     max_source_chars: int = 80_000
     min_page_text: int = 180
     request_delay_min: float = 3.0
     request_delay_max: float = 8.0
     domain_cooldown: float = 20.0
     blocked_domain_cooldown: float = 900.0
-    product_time_budget: int = 180
+    product_time_budget: int = 150
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"

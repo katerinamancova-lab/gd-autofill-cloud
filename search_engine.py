@@ -77,23 +77,29 @@ def build_queries(product_name: str, category: str) -> list[str]:
     tokens = _model_tokens(product_name)
     family_name = " ".join(tokens)
     latin_variant = re.sub(r"\bфб\b", "FB", product_name, flags=re.I)
-    queries = [
-        f"{quoted} характеристики {suffix}",
-        f"{quoted} технические характеристики {suffix}",
-        f"{quoted} specs specification {suffix}",
-        f"{quoted} паспорт инструкция manual pdf {suffix}",
+    query_templates = [
+        "{q} характеристики {suffix}",
+        "{q} технические характеристики {suffix}",
+        "{q} характеристики двигатель мощность вес размеры {suffix}",
+        "{q} тормоза подвеска колёсная база клиренс {suffix}",
+        "{q} объём двигателя мощность л.с. бак вес {suffix}",
+        "{q} specs specification {suffix}",
+        "{q} technical specifications engine power weight dimensions {suffix}",
+        "{q} паспорт инструкция manual pdf {suffix}",
+        "{q} каталог характеристики pdf {suffix}",
     ]
+    queries = [template.format(q=quoted, suffix=suffix) for template in query_templates]
     if latin_variant.lower() != product_name.lower():
         queries.append(f'"{latin_variant}" характеристики {suffix}')
     if family_name and family_name.lower() != product_name.lower():
         queries.extend(
             [
                 f'"{family_name}" характеристики {suffix}',
-                f"{family_name} specifications manual pdf {suffix}",
+                f'{family_name} specifications manual pdf {suffix}',
             ]
         )
     if category and category != "Не определена":
-        queries.append(f"{product_name} {category} характеристики {suffix}")
+        queries.append(f'{product_name} {category} характеристики {suffix}')
     return queries
 
 
@@ -108,6 +114,8 @@ GENERIC_MODEL_WORDS = {
     "лодки",
     "пвх",
     "мотор",
+    "мотоцикл",
+    "мотоциклы",
     "характеристики",
 }
 
@@ -212,7 +220,6 @@ class SearchEngine:
 
         for query in build_queries(product_name, category):
             for provider in providers:
-                accepted_before = len(results)
                 try:
                     found = provider(query)
                 except Exception as exc:
@@ -234,7 +241,4 @@ class SearchEngine:
                     results.append(item)
                     if len(results) >= self.settings.max_results_per_product:
                         return results
-                # Fall back when a provider returned links but all were rejected.
-                if len(results) > accepted_before:
-                    break
         return results
