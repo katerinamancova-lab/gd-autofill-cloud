@@ -25,7 +25,15 @@ PROTECTED_COLUMN_MARKERS = {
     "retail price",
 }
 
-REPORT_SHEETS = {"Отчёт", "Проверить", "Источники"}
+REPORT_SHEETS = {
+    "Отчёт",
+    "Проверить",
+    "Источники",
+    # Backward compatibility with older builds that had mojibake sheet names.
+    "РћС‚С‡С‘С‚",
+    "РџСЂРѕРІРµСЂРёС‚СЊ",
+    "РСЃС‚РѕС‡РЅРёРєРё",
+}
 
 
 @dataclass(frozen=True)
@@ -42,14 +50,14 @@ class Settings:
     max_results_per_product: int = 40
     max_pages_per_product: int = 8
     max_firecrawl_urls_per_product: int = 8
-    firecrawl_timeout: int = 35
-    max_source_chars: int = 80_000
+    firecrawl_timeout: int = 45
+    max_source_chars: int = 100_000
     min_page_text: int = 180
     request_delay_min: float = 3.0
     request_delay_max: float = 8.0
     domain_cooldown: float = 20.0
     blocked_domain_cooldown: float = 900.0
-    product_time_budget: int = 150
+    product_time_budget: int = 180
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"

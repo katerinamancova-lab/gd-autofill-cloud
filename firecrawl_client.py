@@ -12,7 +12,8 @@ from parsers import ParsedSource
 from search_engine import SearchResult, is_blacklisted
 
 
-FIRECRAWL_ENDPOINT = "https://api.firecrawl.dev/v1/scrape"
+# Firecrawl docs currently use the v2 scrape endpoint.
+FIRECRAWL_ENDPOINT = "https://api.firecrawl.dev/v2/scrape"
 
 
 def _clean_text(value: str) -> str:
@@ -35,6 +36,13 @@ def _pick_text(data: dict[str, Any]) -> tuple[str, str]:
     ]
     text = _clean_text("\n\n".join(part for part in parts if part))
     return title, text
+
+
+def _response_error(response: requests.Response) -> str:
+    body = (response.text or "").strip().replace("\n", " ")
+    if len(body) > 240:
+        body = body[:240] + "..."
+    return f"Firecrawl HTTP {response.status_code}: {body or response.reason}"
 
 
 class FirecrawlClient:
@@ -69,11 +77,8 @@ class FirecrawlClient:
                 },
                 json={
                     "url": result.url,
-                    "formats": ["markdown", "html"],
+                    "formats": ["markdown"],
                     "onlyMainContent": True,
-                    "maxAge": 172800000,
-                    "parsers": ["pdf"],
-                    "timeout": self.settings.firecrawl_timeout * 1000,
                 },
                 timeout=self.settings.firecrawl_timeout + 10,
             )
@@ -82,14 +87,14 @@ class FirecrawlClient:
                     result.url,
                     "firecrawl ошибка",
                     provider=result.provider,
-                    error="Firecrawl отклонил ключ или доступ",
+                    error=_response_error(response),
                 )
-            if response.status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
+            if response.status_code in {400, 408, 409, 425, 429, 500, 502, 503, 504}:
                 return ParsedSource(
                     result.url,
                     "firecrawl ошибка",
                     provider=result.provider,
-                    error=f"Firecrawl временная ошибка HTTP {response.status_code}",
+                    error=_response_error(response),
                 )
             response.raise_for_status()
             payload = response.json()

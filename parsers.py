@@ -198,7 +198,7 @@ def fetch_source(
 
 def _normalize_key(value: str) -> str:
     value = re.sub(r"\[[^\]]+]", "", value.lower())
-    return re.sub(r"[^a-zа-я0-9]+", "", value)
+    return re.sub(r"[^a-zа-яё0-9]+", "", value)
 
 
 def _canonical_url(url: str) -> str:
@@ -226,9 +226,13 @@ def source_matches_product(product_name: str, source: ParsedSource) -> bool:
         "лодки",
         "пвх",
         "мотоцикл",
+        "мотоциклы",
         "мотор",
         "с",
         "псм",
+        "abs",
+        "tour",
+        "rally",
         "seats",
     }
     tokens = [
@@ -242,7 +246,8 @@ def source_matches_product(product_name: str, source: ParsedSource) -> bool:
     numeric = [token for token in tokens if any(char.isdigit() for char in token)]
     if numeric and not any(token in haystack for token in numeric):
         return False
-    return sum(token in haystack for token in tokens) >= max(1, len(tokens) // 2)
+    brand_or_model_hits = sum(token in haystack for token in tokens)
+    return brand_or_model_hits >= 1
 
 
 def extract_pairs(text: str) -> dict[str, list[str]]:
@@ -281,7 +286,7 @@ def _column_kind(column: str) -> str:
         return "engine_cc_number"
     if "мощность" in label and "диапазон" not in label:
         return "power_hp_number"
-    if any(part in label for part in ("колёсная база", "клиренс", "высота по седлу")):
+    if any(part in label for part in ("колёсная база", "колесная база", "клиренс", "высота по седлу")):
         return "mm_number"
     if "подвеска" in label:
         return "suspension"
@@ -289,7 +294,7 @@ def _column_kind(column: str) -> str:
         return "cm_number"
     if "вес" in label:
         return "kg_number"
-    if "объём бака" in label:
+    if "объём бака" in label or "объем бака" in label:
         return "liter_number"
     if "количество цилиндров" in label or "количество тактов" in label:
         return "small_integer"
@@ -299,9 +304,9 @@ def _column_kind(column: str) -> str:
         return "fuel_type"
     if "тип мотоцикла" in label:
         return "motorcycle_type"
-    if "тормоза передние" in label or "колеса передние" in label:
+    if "перед" in label and ("тормоз" in label or "колес" in label or "колёс" in label):
         return "front_only"
-    if "тормоза задние" in label or "колеса задние" in label:
+    if "зад" in label and ("тормоз" in label or "колес" in label or "колёс" in label):
         return "rear_only"
     return "text"
 
@@ -339,12 +344,15 @@ def extract_with_gemini(
     prompt = f"""
 Ты извлекаешь характеристики товара только из предоставленных источников.
 Не используй знания из памяти и не делай предположений.
+Если значение найдено хотя бы в одном нормальном источнике и относится к этому товару — верни его.
+Не требуй подтверждения в нескольких источниках.
 Не заполняй поле, если источник говорит о другом товаре, другой модификации или значение относится к другой характеристике.
 Не бери телефоны, email, адреса, цены, SEO-текст, крошки меню, условия доставки и рекламные фразы как характеристики.
 Если в названии столбца есть текст в квадратных скобках, это внутренний код. Главный смысл столбца — русский label до скобок.
 Например: "Тормоза передние [REAR_BRAKE]" означает именно передние тормоза, несмотря на код REAR_BRAKE.
 Для числовых столбцов возвращай только число без лишнего текста и единиц, если это возможно.
 Для длины/ширины/высоты в сантиметрах переводи миллиметры в сантиметры.
+Ключи JSON должны совпадать со строками из поля "key" один в один.
 Товар: {product_name}
 Категория: {category}
 Столбцы для заполнения:
@@ -366,7 +374,7 @@ def extract_with_gemini(
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent"
         )
-        attempts = 2 if model == settings.gemini_model else 1
+        attempts = 3 if model == settings.gemini_model else 2
         for attempt in range(attempts):
             try:
                 response = requests.post(
@@ -525,16 +533,16 @@ def _sanitize_value_for_column(column: str, value: str, evidence: str) -> str:
         return raw[:80]
 
     if kind == "front_only":
-        if _has_front(combined) and _has_rear(combined):
+        if _has_front(lowered) and _has_rear(lowered):
             return ""
-        if _has_rear(combined) and not _has_front(combined):
+        if _has_rear(lowered) and not _has_front(lowered):
             return ""
         return raw[:140]
 
     if kind == "rear_only":
-        if _has_front(combined) and _has_rear(combined):
+        if _has_front(lowered) and _has_rear(lowered):
             return ""
-        if _has_front(combined) and not _has_rear(combined):
+        if _has_front(lowered) and not _has_rear(lowered):
             return ""
         return raw[:140]
 
@@ -558,6 +566,8 @@ def validate_extraction(
     source_text = {
         _canonical_url(source.url): _normalized_evidence(source.text) for source in sources
     }
+    all_text = " ".join(source_text.values())
+    known_urls = {_canonical_url(source.url): source.url for source in sources}
     valid: dict[str, dict[str, str]] = {}
     for key, raw in extracted.items():
         if key not in allowed:
@@ -566,20 +576,27 @@ def validate_extraction(
         value = str(item.get("value", "")).strip()
         source_url = str(item.get("source", "")).strip()
         evidence = str(item.get("evidence", "")).strip()
-        if not value or not source_url or is_blacklisted(source_url):
+        if not value:
+            continue
+        if not source_url and sources:
+            source_url = sources[0].url
+        if not source_url or is_blacklisted(source_url):
             continue
         value = _sanitize_value_for_column(key, value, evidence)
         if not value:
             continue
-        text = source_text.get(_canonical_url(source_url), "")
+        canonical = _canonical_url(source_url)
+        text = source_text.get(canonical, "")
+        if not text and canonical not in known_urls:
+            # Gemini sometimes returns a canonical/redirect URL not byte-identical
+            # to the search result. If the value or evidence exists anywhere in
+            # the fetched Firecrawl text, keep it.
+            text = all_text
         if not text:
             continue
-        # Require either exact value or evidence to exist in fetched content.
         normalized_value = _normalized_evidence(value)
         normalized_quote = _normalized_evidence(evidence)
-        if normalized_value not in text and (
-            not normalized_quote or normalized_quote not in text
-        ):
+        if not normalized_quote and normalized_value not in text:
             continue
         valid[key] = {"value": value, "source": source_url, "evidence": evidence}
     return valid

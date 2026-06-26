@@ -6,6 +6,7 @@ import time
 import re
 from collections import Counter
 from pathlib import Path
+from urllib.parse import urlparse
 
 import streamlit as st
 
@@ -29,6 +30,15 @@ from parsers import (
     validate_extraction,
 )
 from search_engine import SearchEngine
+
+OPEN_STATUSES = {"открыт", "РѕС‚РєСЂС‹С‚"}
+
+
+def _canonical_url(url: str) -> str:
+    parsed = urlparse((url or "").strip())
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    path = re.sub(r"/+$", "", parsed.path or "")
+    return f"{host}{path}".lower()
 
 st.set_page_config(page_title="GD AutoFill", page_icon="⚙️", layout="wide")
 
@@ -145,7 +155,8 @@ def process_file(
         status.write(f"**{position}/{len(all_rows)}** · {product_name} · {category}")
 
         results = engine.search_product(product_name, category)
-        parsed = _snippet_sources(product_name, results)
+        parsed: list[ParsedSource] = []
+        snippet_sources = _snippet_sources(product_name, results)
         manual_source = _manual_source_for_product(product_name, manual_sources_text)
         if manual_source:
             parsed.insert(0, manual_source)
@@ -155,23 +166,45 @@ def process_file(
                 if time.monotonic() - started > settings.product_time_budget:
                     break
                 parsed.append(firecrawl.scrape(result))
+            firecrawl_opened = [
+                source
+                for source in parsed
+                if source.status in OPEN_STATUSES and "Firecrawl" in source.provider
+            ]
+            if not firecrawl_opened:
+                for result in results[: min(settings.max_pages_per_product, 6)]:
+                    if time.monotonic() - started > settings.product_time_budget:
+                        break
+                    parsed.append(fetch_source(result, settings, fetcher))
         else:
             for result in results[: settings.max_pages_per_product]:
                 if time.monotonic() - started > settings.product_time_budget:
                     break
                 parsed.append(fetch_source(result, settings, fetcher))
 
-        usable = [
+        full_text_usable = [
             source
             for source in parsed
-            if source.status == "открыт" and source_matches_product(product_name, source)
+            if source.status in OPEN_STATUSES
+            and source.text
+            and source_matches_product(product_name, source)
         ]
+        usable = full_text_usable or [
+            source
+            for source in snippet_sources
+            if source_matches_product(product_name, source)
+        ]
+        parsed_for_report = parsed + ([] if full_text_usable else snippet_sources)
         extracted = {}
+        gemini_extracted_count = 0
         gemini_error = ""
         if columns and usable:
             try:
                 extracted = extract_with_gemini(
                     product_name, category, columns, usable, settings
+                )
+                gemini_extracted_count = len(
+                    [key for key in extracted if key in set(columns)]
                 )
             except Exception as exc:
                 gemini_error = str(exc)[:500]
@@ -181,9 +214,9 @@ def process_file(
 
         values = validate_extraction(extracted, columns, usable)
         changed = write_values(layout, row, values)
-        used_urls = {item["source"] for item in values.values()}
-        for source in parsed:
-            source.used = source.url in used_urls
+        used_urls = {_canonical_url(item["source"]) for item in values.values()}
+        for source in parsed_for_report:
+            source.used = _canonical_url(source.url) in used_urls
             source_rows.append(
                 [
                     row,
@@ -191,6 +224,8 @@ def process_file(
                     source.url,
                     source.provider,
                     source.status,
+                    len(source.text or ""),
+                    gemini_extracted_count if source in usable else 0,
                     "да" if source.used else "нет",
                     source.error,
                 ]
@@ -235,7 +270,13 @@ def process_file(
                 ]
             )
 
-        skipped = sum(source.status != "открыт" for source in parsed)
+        firecrawl_read = sum(
+            1
+            for source in parsed
+            if source.status in OPEN_STATUSES and "Firecrawl" in source.provider
+        )
+        collected_chars = sum(len(source.text or "") for source in full_text_usable)
+        skipped = sum(source.status not in OPEN_STATUSES for source in parsed)
         report_rows.append(
             [
                 row,
@@ -244,7 +285,10 @@ def process_file(
                 f"{confidence:.0%}",
                 changed,
                 len(results),
-                len(usable),
+                firecrawl_read,
+                collected_chars,
+                gemini_extracted_count,
+                changed,
                 skipped,
                 len(unresolved),
             ]
