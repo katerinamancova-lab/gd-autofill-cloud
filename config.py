@@ -33,6 +33,7 @@ class Settings:
     serper_api_key: str = field(default_factory=lambda: os.getenv("SERPER_API_KEY", ""))
     bing_api_key: str = field(default_factory=lambda: os.getenv("BING_API_KEY", ""))
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    firecrawl_api_key: str = field(default_factory=lambda: os.getenv("FIRECRAWL_API_KEY", ""))
     gemini_model: str = field(
         default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     )
@@ -40,6 +41,8 @@ class Settings:
     page_timeout: int = 20
     max_results_per_product: int = 40
     max_pages_per_product: int = 8
+    max_firecrawl_urls_per_product: int = 8
+    firecrawl_timeout: int = 35
     max_source_chars: int = 80_000
     min_page_text: int = 180
     request_delay_min: float = 3.0
@@ -59,7 +62,13 @@ def load_settings() -> Settings:
     try:
         import streamlit as st
 
-        for key in ("SERPER_API_KEY", "BING_API_KEY", "GEMINI_API_KEY", "GEMINI_MODEL"):
+        for key in (
+            "SERPER_API_KEY",
+            "BING_API_KEY",
+            "GEMINI_API_KEY",
+            "GEMINI_MODEL",
+            "FIRECRAWL_API_KEY",
+        ):
             if key in st.secrets:
                 values[key] = str(st.secrets[key])
     except Exception:

@@ -18,6 +18,7 @@ from excel_writer import (
     writable_columns,
     write_values,
 )
+from firecrawl_client import FirecrawlClient
 from parsers import (
     ParsedSource,
     SourceFetcher,
@@ -126,6 +127,7 @@ def process_file(
     rows = all_rows[start_position:end_position]
     engine = SearchEngine(settings)
     fetcher = SourceFetcher(settings)
+    firecrawl = FirecrawlClient(settings)
     report_rows = list(saved_report_rows or [])
     review_rows = list(saved_review_rows or [])
     source_rows = list(saved_source_rows or [])
@@ -147,10 +149,17 @@ def process_file(
         manual_source = _manual_source_for_product(product_name, manual_sources_text)
         if manual_source:
             parsed.insert(0, manual_source)
-        for result in results[: settings.max_pages_per_product]:
-            if time.monotonic() - started > settings.product_time_budget:
-                break
-            parsed.append(fetch_source(result, settings, fetcher))
+        if settings.firecrawl_api_key:
+            firecrawl_candidates = results[: settings.max_firecrawl_urls_per_product]
+            for result in firecrawl_candidates:
+                if time.monotonic() - started > settings.product_time_budget:
+                    break
+                parsed.append(firecrawl.scrape(result))
+        else:
+            for result in results[: settings.max_pages_per_product]:
+                if time.monotonic() - started > settings.product_time_budget:
+                    break
+                parsed.append(fetch_source(result, settings, fetcher))
 
         usable = [
             source
@@ -294,10 +303,11 @@ st.caption(
 
 with st.expander("Подключения и безопасность"):
     settings = load_settings()
-    cols = st.columns(3)
+    cols = st.columns(4)
     cols[0].metric("Serper", "подключён" if settings.serper_api_key else "не задан")
     cols[1].metric("Bing", "подключён" if settings.bing_api_key else "не задан")
-    cols[2].metric("Gemini", "подключён" if settings.gemini_api_key else "не задан")
+    cols[2].metric("Firecrawl", "подключён" if settings.firecrawl_api_key else "не задан")
+    cols[3].metric("Gemini", "подключён" if settings.gemini_api_key else "не задан")
     st.caption(
         "Без Serper/Bing используется DuckDuckGo. Без Gemini включается более "
         "ограниченный локальный разбор. Домены из blacklist никогда не используются."

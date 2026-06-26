@@ -104,3 +104,21 @@ GEMINI_MODEL = "gemini-2.5-flash"
 - Макросы `.xlsm` и старый формат `.xls` не поддерживаются.
 - Для больших файлов ограничения времени Streamlit Cloud могут потребовать
   разбивать файл на части.
+
+
+## Firecrawl architecture
+
+Current pipeline:
+
+Excel -> category -> product name -> Search API -> blacklist -> ranked URLs -> Firecrawl -> Gemini Extract -> validation -> Excel.
+
+Required production secrets:
+
+```toml
+FIRECRAWL_API_KEY = "..."
+SERPER_API_KEY = "..."
+GEMINI_API_KEY = "..."
+GEMINI_MODEL = "gemini-2.5-flash"
+```
+
+Firecrawl is the main page reader. The old requests/BeautifulSoup reader is used only when FIRECRAWL_API_KEY is not configured.
