@@ -271,6 +271,57 @@ def _extract_json(text: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _display_label(column: str) -> str:
+    return re.sub(r"\s*\[[^\]]+]\s*$", "", column).strip()
+
+
+def _column_kind(column: str) -> str:
+    label = _display_label(column).lower()
+    if "объём двигателя" in label and "диапазон" not in label:
+        return "engine_cc_number"
+    if "мощность" in label and "диапазон" not in label:
+        return "power_hp_number"
+    if any(part in label for part in ("колёсная база", "клиренс", "высота по седлу")):
+        return "mm_number"
+    if label.startswith(("длина", "ширина", "высота")) and "седл" not in label:
+        return "cm_number"
+    if "вес" in label:
+        return "kg_number"
+    if "объём бака" in label:
+        return "liter_number"
+    if "количество цилиндров" in label or "количество тактов" in label:
+        return "small_integer"
+    if "макс" in label and "скор" in label:
+        return "speed_number"
+    if "тип топлива" in label:
+        return "fuel_type"
+    if "тип мотоцикла" in label:
+        return "motorcycle_type"
+    if "тормоза передние" in label or "колеса передние" in label:
+        return "front_only"
+    if "тормоза задние" in label or "колеса задние" in label:
+        return "rear_only"
+    return "text"
+
+
+def _column_guide(columns: list[str]) -> list[dict[str, str]]:
+    guide = []
+    for column in columns:
+        label = _display_label(column)
+        guide.append(
+            {
+                "key": column,
+                "label": label,
+                "kind": _column_kind(column),
+                "rule": (
+                    "Ориентируйся на label. Текст в квадратных скобках — только внутренний код; "
+                    "если код противоречит label, используй label."
+                ),
+            }
+        )
+    return guide
+
+
 def extract_with_gemini(
     product_name: str,
     category: str,
@@ -286,10 +337,16 @@ def extract_with_gemini(
     prompt = f"""
 Ты извлекаешь характеристики товара только из предоставленных источников.
 Не используй знания из памяти и не делай предположений.
+Не заполняй поле, если источник говорит о другом товаре, другой модификации или значение относится к другой характеристике.
+Не бери телефоны, email, адреса, цены, SEO-текст, крошки меню, условия доставки и рекламные фразы как характеристики.
+Если в названии столбца есть текст в квадратных скобках, это внутренний код. Главный смысл столбца — русский label до скобок.
+Например: "Тормоза передние [REAR_BRAKE]" означает именно передние тормоза, несмотря на код REAR_BRAKE.
+Для числовых столбцов возвращай только число без лишнего текста и единиц, если это возможно.
+Для длины/ширины/высоты в сантиметрах переводи миллиметры в сантиметры.
 Товар: {product_name}
 Категория: {category}
-Разрешённые ключи JSON (точно как в Excel):
-{json.dumps(columns, ensure_ascii=False)}
+Столбцы для заполнения:
+{json.dumps(_column_guide(columns), ensure_ascii=False)}
 
 Верни только JSON-объект. Значение каждого ключа должно иметь вид:
 {{"value": "значение", "evidence": "короткая цитата/фрагмент", "source": "URL"}}
@@ -374,6 +431,114 @@ def extract_locally(columns: list[str], sources: list[ParsedSource]) -> dict[str
     return output
 
 
+CONTACT_RE = re.compile(
+    r"(@|email|e-mail|тел\.?|телефон|whatsapp|viber|\+?\d[\d\s().-]{8,})",
+    re.I,
+)
+
+
+def _first_number(value: str) -> str:
+    match = re.search(r"\d+(?:[.,]\d+)?", value)
+    return match.group(0).replace(",", ".") if match else ""
+
+
+def _format_number(value: float) -> str:
+    if abs(value - round(value)) < 0.05:
+        return str(int(round(value)))
+    return f"{value:.1f}".rstrip("0").rstrip(".")
+
+
+def _has_front(value: str) -> bool:
+    return bool(re.search(r"передн|front", value, re.I))
+
+
+def _has_rear(value: str) -> bool:
+    return bool(re.search(r"задн|rear", value, re.I))
+
+
+def _sanitize_value_for_column(column: str, value: str, evidence: str) -> str:
+    """Return a normalized safe value for a column, or empty string to reject it."""
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not raw:
+        return ""
+    check_text = f"{raw} {evidence}"
+    if CONTACT_RE.search(raw):
+        return ""
+    if len(raw) > 180:
+        return ""
+
+    kind = _column_kind(column)
+    lowered = raw.lower()
+    combined = check_text.lower()
+
+    if kind in {
+        "engine_cc_number",
+        "power_hp_number",
+        "mm_number",
+        "cm_number",
+        "kg_number",
+        "liter_number",
+        "small_integer",
+        "speed_number",
+    }:
+        number = _first_number(raw)
+        if not number:
+            return ""
+        numeric = float(number)
+        if kind == "engine_cc_number" and not (40 <= numeric <= 3000):
+            return ""
+        if kind == "power_hp_number" and not (1 <= numeric <= 250):
+            return ""
+        if kind == "mm_number" and not (50 <= numeric <= 2500):
+            return ""
+        if kind == "cm_number":
+            # The Excel header asks for centimeters. Many sources publish overall
+            # dimensions in millimeters, so convert obvious mm values.
+            if numeric > 1000 or "мм" in lowered or " mm" in lowered:
+                numeric = numeric / 10
+            if not (20 <= numeric <= 500):
+                return ""
+        if kind == "kg_number" and not (10 <= numeric <= 800):
+            return ""
+        if kind == "liter_number" and not (1 <= numeric <= 80):
+            return ""
+        if kind == "small_integer" and not (1 <= numeric <= 12):
+            return ""
+        if kind == "speed_number" and not (5 <= numeric <= 350):
+            return ""
+        return _format_number(numeric)
+
+    if kind == "fuel_type":
+        if any(word in lowered for word in ("abs", "тормоз", "подвес", "диск", "электронно управляем")):
+            return ""
+        if not any(word in lowered for word in ("бензин", "аи-", "diesel", "gasoline", "petrol", "электро")):
+            return ""
+        return raw[:80]
+
+    if kind == "motorcycle_type":
+        if any(word in lowered for word in ("abs", "тормоз", "диск", "электронно управляем", "pgm-fi")):
+            return ""
+        return raw[:80]
+
+    if kind == "front_only":
+        if _has_front(combined) and _has_rear(combined):
+            return ""
+        if _has_rear(combined) and not _has_front(combined):
+            return ""
+        return raw[:140]
+
+    if kind == "rear_only":
+        if _has_front(combined) and _has_rear(combined):
+            return ""
+        if _has_front(combined) and not _has_rear(combined):
+            return ""
+        return raw[:140]
+
+    if any(bad in lowered for bad in ("email", "e-mail", "телефон", "whatsapp", "корзина", "купить")):
+        return ""
+    return raw[:180]
+
+
 def validate_extraction(
     extracted: dict[str, Any], columns: list[str], sources: list[ParsedSource]
 ) -> dict[str, dict[str, str]]:
@@ -391,6 +556,9 @@ def validate_extraction(
         source_url = str(item.get("source", "")).strip()
         evidence = str(item.get("evidence", "")).strip()
         if not value or not source_url or is_blacklisted(source_url):
+            continue
+        value = _sanitize_value_for_column(key, value, evidence)
+        if not value:
             continue
         text = source_text.get(_canonical_url(source_url), "")
         if not text:
