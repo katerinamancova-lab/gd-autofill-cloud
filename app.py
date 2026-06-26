@@ -252,8 +252,14 @@ if "result" not in st.session_state:
 if "job" not in st.session_state:
     st.session_state.job = None
 
+
+
+BATCH_SIZE_FULL = 10
+BATCH_SIZE_TEST = 3
+AUTO_CONTINUE_DELAY_SECONDS = 1.5
+
 start_clicked = st.button(
-    "????????? Excel",
+    "Заполнить Excel",
     type="primary",
     disabled=uploaded is None or bool(st.session_state.job),
     use_container_width=True,
@@ -262,12 +268,16 @@ start_clicked = st.button(
 should_process = False
 
 if start_clicked:
+    batch_size = BATCH_SIZE_TEST if mode.startswith("Тест") else BATCH_SIZE_FULL
     st.session_state.job = {
         "original": uploaded.getvalue(),
         "current": None,
         "name": uploaded.name,
-        "test_mode": mode.startswith("????"),
+        "test_mode": mode.startswith("Тест"),
         "next": 0,
+        "total": None,
+        "batch_size": batch_size,
+        "auto_continue": True,
         "report_rows": [],
         "review_rows": [],
         "source_rows": [],
@@ -279,35 +289,42 @@ if start_clicked:
 
 if st.session_state.job:
     job = st.session_state.job
-    status = st.empty()
     processed = job["next"]
-    status.info(
-        f"????????? ???????: {processed}. "
-        "??????? ?????? ????, ????? ?????????? ????????? ?????."
-    )
+    total = job.get("total")
+    batch_size = job.get("batch_size", BATCH_SIZE_FULL)
+    auto_continue = job.get("auto_continue", True)
+
+    if total:
+        st.info(
+            f"Готово {processed} из {total}. "
+            f"Программа сама идёт пачками по {batch_size} товаров."
+        )
+    else:
+        st.info(
+            f"Начинаю заполнение. "
+            f"Для устойчивости файл сохраняется после каждых {batch_size} товаров."
+        )
 
     action_left, action_right = st.columns([3, 1])
     with action_left:
         continue_clicked = st.button(
-            "?????????? ? ?????????? ????????? ?????",
-            type="primary",
+            f"Продолжить вручную ? ещё до {batch_size} товаров",
+            type="secondary",
             use_container_width=True,
         )
     with action_right:
-        reset_clicked = st.button("?????? ??????", use_container_width=True)
+        stop_clicked = st.button("Остановить", use_container_width=True)
 
-    if reset_clicked:
-        st.session_state.job = None
-        st.session_state.result = None
-        st.session_state.summary = None
-        st.session_state.filename = None
-        st.rerun()
+    if stop_clicked:
+        job["auto_continue"] = False
+        st.warning("Автопродолжение остановлено. Можно скачать уже готовую часть или нажать ?Продолжить?." )
 
     should_process = should_process or continue_clicked
 
 if st.session_state.job and should_process:
     job = st.session_state.job
-    progress = st.progress(0, text="??????????? ???? ??????")
+    batch_size = job.get("batch_size", BATCH_SIZE_FULL)
+    progress = st.progress(0, text=f"Ищу и заполняю до {batch_size} товаров?")
     status = st.empty()
 
     class StoredUpload:
@@ -331,7 +348,7 @@ if st.session_state.job and should_process:
             status,
             existing_bytes=job["current"],
             start_position=job["next"],
-            batch_size=1,
+            batch_size=batch_size,
             saved_report_rows=job["report_rows"],
             saved_review_rows=job["review_rows"],
             saved_source_rows=job["source_rows"],
@@ -339,6 +356,7 @@ if st.session_state.job and should_process:
         job.update(
             current=result,
             next=next_position,
+            total=total,
             report_rows=report_rows,
             review_rows=review_rows,
             source_rows=source_rows,
@@ -348,17 +366,22 @@ if st.session_state.job and should_process:
         st.session_state.filename = f"{Path(job['name']).stem}_filled.xlsx"
         if next_position >= total:
             st.session_state.job = None
-            status.success("??????. ??? ?????? ??????????.")
+            status.success("Готово. Все товары обработаны. Скачайте Excel ниже.")
         else:
             status.success(
-                f"????? {next_position} ?? {total} ????????. "
-                "????? ??????? ????????????? Excel ??? ?????????? ?????????."
+                f"Сохранено {next_position} из {total}. "
+                "Сейчас автоматически перейду к следующей пачке."
             )
+            if job.get("auto_continue", True):
+                time.sleep(AUTO_CONTINUE_DELAY_SECONDS)
+                st.rerun()
     except Exception as exc:
+        job["auto_continue"] = False
         status.error(
-            "????????? ????????????, ?? ??? ??????? ????? ?????????. "
-            f"???????: {exc}. ????? ????????? ????????? ????? ??? ?????? ??????."
+            "Обработка остановилась, но уже готовая часть сохранена. "
+            f"Причина: {exc}. Можно скачать готовую часть или нажать ?Продолжить?."
         )
+
 if st.session_state.result:
     summary = st.session_state.summary or []
     total_filled = sum(row[4] for row in summary)
