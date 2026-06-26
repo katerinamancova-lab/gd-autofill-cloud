@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from excel_writer import (
     write_values,
 )
 from parsers import (
+    ParsedSource,
     SourceFetcher,
     extract_locally,
     extract_with_gemini,
@@ -42,6 +44,63 @@ st.markdown(
 )
 
 
+def _product_tokens(product_name: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(r"[a-zа-яё0-9]+", product_name.lower())
+        if len(token) >= 2
+    ]
+
+
+def _snippet_sources(product_name: str, results) -> list[ParsedSource]:
+    """Use search snippets as weak but useful fallback evidence."""
+    output = []
+    for result in results:
+        text = " ".join(part for part in (result.title, result.snippet) if part).strip()
+        if len(text) < 20:
+            continue
+        tokens = _product_tokens(product_name)
+        if tokens and not any(token in text.lower() for token in tokens):
+            continue
+        output.append(
+            ParsedSource(
+                result.url,
+                "открыт",
+                title=result.title,
+                text=f"{result.title}\n{result.snippet}\nURL: {result.url}",
+                provider=f"{result.provider} snippet",
+            )
+        )
+    return output
+
+
+def _manual_source_for_product(product_name: str, manual_text: str) -> ParsedSource | None:
+    """Pick a user-pasted source block for the current product."""
+    manual_text = (manual_text or "").strip()
+    if len(manual_text) < 20:
+        return None
+    lower = manual_text.lower()
+    tokens = _product_tokens(product_name)
+    if tokens and not any(token in lower for token in tokens):
+        return None
+
+    chunks = re.split(r"\n\s*(?:={3,}|-{3,}|#{2,})\s*\n", manual_text)
+    chosen = manual_text
+    for chunk in chunks:
+        chunk_lower = chunk.lower()
+        if tokens and all(token in chunk_lower for token in tokens[:2]):
+            chosen = chunk
+            break
+
+    return ParsedSource(
+        f"manual://{product_name}",
+        "открыт",
+        title=f"Ручной источник: {product_name}",
+        text=chosen[:80_000],
+        provider="Ручной текст",
+    )
+
+
 def process_file(
     uploaded_file,
     test_mode: bool,
@@ -54,6 +113,7 @@ def process_file(
     saved_report_rows: list | None = None,
     saved_review_rows: list | None = None,
     saved_source_rows: list | None = None,
+    manual_sources_text: str = "",
 ):
     settings = load_settings()
     workbook, layout = inspect_workbook(existing_bytes or uploaded_file.getvalue())
@@ -83,7 +143,10 @@ def process_file(
         status.write(f"**{position}/{len(all_rows)}** · {product_name} · {category}")
 
         results = engine.search_product(product_name, category)
-        parsed = []
+        parsed = _snippet_sources(product_name, results)
+        manual_source = _manual_source_for_product(product_name, manual_sources_text)
+        if manual_source:
+            parsed.insert(0, manual_source)
         for result in results[: settings.max_pages_per_product]:
             if time.monotonic() - started > settings.product_time_budget:
                 break
@@ -245,6 +308,23 @@ with st.expander("Подключения и безопасность"):
         "ставится на паузу, а ссылка попадает в лист «Проверить»."
     )
 
+manual_sources_text = st.text_area(
+    "Ручные источники, если сайт открылся только после CAPTCHA",
+    height=180,
+    placeholder=(
+        "Не обязательно. Если сайт просит CAPTCHA, откройте его вручную, скопируйте блок "
+        "характеристик и вставьте сюда. Для нескольких товаров разделяйте блоки строкой ---.\n\n"
+        "Пример:\n"
+        "VOGE DS800 Rally\n"
+        "Объём двигателя: 798 см3\n"
+        "Мощность: 95 л.с.\n"
+        "Передний тормоз: два диска 310 мм\n"
+        "---\n"
+        "Honda CB400F\n"
+        "Объём двигателя: 399 см3"
+    ),
+)
+
 if "result" not in st.session_state:
     st.session_state.result = None
     st.session_state.summary = None
@@ -278,6 +358,7 @@ if start_clicked:
         "total": None,
         "batch_size": batch_size,
         "auto_continue": True,
+        "manual_sources_text": manual_sources_text,
         "report_rows": [],
         "review_rows": [],
         "source_rows": [],
@@ -352,6 +433,7 @@ if st.session_state.job and should_process:
             saved_report_rows=job["report_rows"],
             saved_review_rows=job["review_rows"],
             saved_source_rows=job["source_rows"],
+            manual_sources_text=job.get("manual_sources_text", ""),
         )
         job.update(
             current=result,

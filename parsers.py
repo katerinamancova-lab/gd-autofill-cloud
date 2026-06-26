@@ -283,6 +283,8 @@ def _column_kind(column: str) -> str:
         return "power_hp_number"
     if any(part in label for part in ("колёсная база", "клиренс", "высота по седлу")):
         return "mm_number"
+    if "подвеска" in label:
+        return "suspension"
     if label.startswith(("длина", "ширина", "высота")) and "седл" not in label:
         return "cm_number"
     if "вес" in label:
@@ -491,6 +493,8 @@ def _sanitize_value_for_column(column: str, value: str, evidence: str) -> str:
             return ""
         if kind == "mm_number" and not (50 <= numeric <= 2500):
             return ""
+        if "высота по седлу" in _display_label(column).lower() and not (400 <= numeric <= 1000):
+            return ""
         if kind == "cm_number":
             # The Excel header asks for centimeters. Many sources publish overall
             # dimensions in millimeters, so convert obvious mm values.
@@ -533,6 +537,13 @@ def _sanitize_value_for_column(column: str, value: str, evidence: str) -> str:
         if _has_front(combined) and not _has_rear(combined):
             return ""
         return raw[:140]
+
+    if kind == "suspension":
+        if len(raw) < 8 or re.fullmatch(r"\d+(?:[.,]\d+)?", raw):
+            return ""
+        if not any(word in lowered for word in ("вилка", "аморт", "подвес", "маятник", "телескоп", "моно")):
+            return ""
+        return raw[:160]
 
     if any(bad in lowered for bad in ("email", "e-mail", "телефон", "whatsapp", "корзина", "купить")):
         return ""
