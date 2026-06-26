@@ -281,7 +281,7 @@ def extract_with_gemini(
     if not settings.gemini_api_key or not sources:
         return {}
     evidence = "\n\n".join(
-        f"SOURCE: {source.url}\n{source.text[:12_000]}" for source in sources if source.text
+        f"SOURCE: {source.url}\n{source.text[:16_000]}" for source in sources if source.text
     )
     prompt = f"""
 Ты извлекаешь характеристики товара только из предоставленных источников.
@@ -296,7 +296,7 @@ def extract_with_gemini(
 Если подтверждения нет — не добавляй ключ. Не добавляй другие ключи.
 
 ИСТОЧНИКИ:
-{evidence[:48_000]}
+{evidence[:60_000]}
 """.strip()
     models = [settings.gemini_model, "gemini-2.5-flash-lite"]
     if settings.gemini_model == "gemini-2.0-flash":
@@ -320,7 +320,7 @@ def extract_with_gemini(
                             "responseMimeType": "application/json",
                         },
                     },
-                    timeout=45,
+                    timeout=60,
                 )
                 if response.status_code in {429, 500, 503, 504}:
                     last_error = RuntimeError(

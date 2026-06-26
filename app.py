@@ -85,7 +85,7 @@ def process_file(
         results = engine.search_product(product_name, category)
         parsed = []
         for result in results[: settings.max_pages_per_product]:
-            if time.monotonic() - started > 115:
+            if time.monotonic() - started > settings.product_time_budget:
                 break
             parsed.append(fetch_source(result, settings, fetcher))
 
@@ -254,7 +254,7 @@ if "job" not in st.session_state:
 
 
 
-BATCH_SIZE_FULL = 10
+BATCH_SIZE_FULL = 5
 BATCH_SIZE_TEST = 3
 AUTO_CONTINUE_DELAY_SECONDS = 1.5
 

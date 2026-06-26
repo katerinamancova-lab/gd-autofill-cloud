@@ -133,6 +133,22 @@ def is_protected(header: str) -> bool:
     return any(marker == normalized or marker in normalized for marker in PROTECTED_COLUMN_MARKERS)
 
 
+NON_RESEARCH_COLUMN_MARKERS = {
+    "скидка",
+    "доступное количество",
+    "нет в продаже",
+    "сортировка",
+    "привязка к аксессуарам",
+    "гарантия на товар",
+}
+
+
+def is_non_research_column(header: str) -> bool:
+    """Admin/catalog fields that should not be searched on external websites."""
+    normalized = _text(header).lower()
+    return any(marker in normalized for marker in NON_RESEARCH_COLUMN_MARKERS)
+
+
 def writable_columns(layout: WorkbookLayout, row: int) -> list[str]:
     output = []
     for index, header in enumerate(layout.headers, start=1):
@@ -141,6 +157,7 @@ def writable_columns(layout: WorkbookLayout, row: int) -> list[str]:
             or index == layout.name_column
             or index in layout.excluded_columns
             or is_protected(header)
+            or is_non_research_column(header)
         ):
             continue
         if is_effectively_empty(layout.sheet.cell(row, index).value):

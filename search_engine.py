@@ -31,8 +31,44 @@ def is_blacklisted(url: str) -> bool:
     return any(host == domain or host.endswith("." + domain) for domain in BLACKLIST)
 
 
+LOW_VALUE_DOMAINS = {
+    "youtube.com",
+    "youtu.be",
+    "reddit.com",
+    "vk.com",
+    "dzen.ru",
+    "zen.yandex.ru",
+    "rutube.ru",
+    "tiktok.com",
+    "instagram.com",
+    "facebook.com",
+}
+
+LOW_VALUE_PATH_PARTS = (
+    "/api/",
+    "/auth",
+    "/login",
+    "/cart",
+    "/basket",
+    "/compare",
+    "/reviews",
+    "/video",
+)
+
+
+def is_low_value_url(url: str) -> bool:
+    """Skip pages that usually do not contain stable product specifications."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    path = parsed.path.lower()
+    if any(host == domain or host.endswith("." + domain) for domain in LOW_VALUE_DOMAINS):
+        return True
+    return any(part in path for part in LOW_VALUE_PATH_PARTS)
+
+
 def exclusion_suffix() -> str:
-    return " ".join(f"-site:{domain}" for domain in sorted(BLACKLIST))
+    excluded = sorted(BLACKLIST | LOW_VALUE_DOMAINS)
+    return " ".join(f"-site:{domain}" for domain in excluded)
 
 
 def build_queries(product_name: str, category: str) -> list[str]:
@@ -184,7 +220,12 @@ class SearchEngine:
                     continue
                 for item in found:
                     clean_url = item.url.split("#", 1)[0]
-                    if not clean_url or clean_url in seen or is_blacklisted(clean_url):
+                    if (
+                        not clean_url
+                        or clean_url in seen
+                        or is_blacklisted(clean_url)
+                        or is_low_value_url(clean_url)
+                    ):
                         continue
                     if relevance_score(product_name, item) < 0.5:
                         continue
